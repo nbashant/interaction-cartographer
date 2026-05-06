@@ -225,8 +225,8 @@ async function exportCommand(args: string[]): Promise<void> {
 async function connectCommand(args: string[]): Promise<void> {
   const { positional, flags } = parseArgs(args);
   const pairCode = String(flags.pair ?? positional[0] ?? "").trim().toUpperCase();
-  if (!pairCode) throw new Error("Missing pairing code. Usage: cartograph connect --pair 8K4P-JD91 --server https://glitchly.onrender.com");
-  const serverUrl = normalizeServerUrl(String(flags.server ?? flags.host ?? "https://glitchly.onrender.com"));
+  if (!pairCode) throw new Error("Missing pairing code. Usage: cartograph connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com");
+  const serverUrl = normalizeServerUrl(String(flags.server ?? flags.host ?? "https://glitchly-app.onrender.com"));
   const agentName = String(flags.name ?? os.hostname());
   const connected = await postJson<{ sessionId: string; agentId: string; pollMs?: number }>(`${serverUrl}/api/agent/connect`, {
     code: pairCode,
@@ -1439,14 +1439,14 @@ function printHelp(): void {
 Usage:
   cartograph run <url> [--out .glitchly/runs/my-app] [--viewports desktop,mobile] [--max-actions 150] [--max-depth 6] [--quality-threshold 75] [--headed]
   cartograph view [run-dir] [--port 4173] [--host 127.0.0.1] [--no-open]
-  cartograph connect --pair 8K4P-JD91 [--server https://glitchly.onrender.com]
+  cartograph connect --pair 8K4P-JD91 [--server https://glitchly-app.onrender.com]
   cartograph demo [--out .glitchly/runs/demo] [--no-open] [--no-view]
   cartograph export <run-dir> --format json|markdown [--include-quality]
 
 Examples:
   cartograph view
   cartograph run http://localhost:3000 --out .glitchly/runs/my-app
-  cartograph connect --pair 8K4P-JD91 --server https://glitchly.onrender.com
+  cartograph connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com
   cartograph export .glitchly/runs/my-app --format json
 `);
 }

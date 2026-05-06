@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: glitchly
+    name: glitchly-app
     runtime: node
     plan: free
     buildCommand: npm ci --include=dev && npm run build && npx playwright install chromium

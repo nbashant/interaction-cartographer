@@ -566,7 +566,7 @@ function ExportButton({ href, label, icon, disabled }: { href: string; label: st
   );
 }
 
-const defaultHostedOrigin = "https://glitchly.onrender.com";
+const defaultHostedOrigin = "https://glitchly-app.onrender.com";
 
 function LocalCompanionPanel({ session }: { session: AgentSession }) {
   const command =

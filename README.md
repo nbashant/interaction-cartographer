@@ -51,7 +51,7 @@ npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91
 For local repo testing before the npm package is published:
 
 ```bash
-npm run cartograph -- connect --pair 8K4P-JD91 --server https://glitchly.onrender.com
+npm run cartograph -- connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com
 ```
 
 The companion connects outbound to the hosted server, receives only allowlisted scan/stop tasks, runs Playwright locally, and uploads the finished findings/screenshots back into the paired browser session.
