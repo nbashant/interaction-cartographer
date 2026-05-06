@@ -2,7 +2,7 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import http, { type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -20,7 +20,7 @@ import {
   type ScanProgressSnapshot
 } from "@interaction-cartographer/core";
 import { numberFromFlag, optionalNumberFromFlag, parseViewports, type Flags } from "./scan-options.js";
-import { runAssetPath, safeJoin } from "./server-utils.js";
+import { runAssetPath, safeJoin, uploadableRunArtifactPath } from "./server-utils.js";
 
 type ActiveScan = {
   controller: AbortController;
@@ -59,14 +59,26 @@ type AgentSession = {
   agentId?: string;
   agentName?: string;
   lastSeenAt?: string;
+  lastUiSeenAt?: string;
   activeTaskId?: string;
   tasks: AgentTask[];
   progress: ScanProgressSnapshot;
+  pendingRunDir?: string;
   runDir?: string;
+  artifactBytesUploaded?: number;
 };
-type UploadedRunFile = {
+type LegacyUploadedRunFile = {
   path: string;
   contentBase64: string;
+};
+type UploadedRunManifestFile = {
+  path: string;
+  size: number;
+  chunks: number;
+};
+type UploadedRunManifest = {
+  files: UploadedRunManifestFile[];
+  totalBytes: number;
 };
 type ReportServerState = {
   runDir: string;
@@ -80,8 +92,12 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.
 const userCwd = process.env.INIT_CWD ? path.resolve(process.env.INIT_CWD) : process.cwd();
 const maxJsonBodyBytes = 1_000_000;
 const maxAgentResultBodyBytes = 90_000_000;
+const maxAgentArtifactChunkBytes = 6_000_000;
+const maxAgentArtifactSessionBytes = numberFromEnv("CARTOGRAPH_MAX_AGENT_ARTIFACT_BYTES", 750_000_000);
 const agentSessionTtlMs = 10 * 60 * 1000;
+const agentUiStaleMs = 5 * 60 * 1000;
 const agentPollMs = 900;
+const agentArtifactRoot = path.join(os.tmpdir(), "interaction-cartographer-sessions");
 
 async function main(): Promise<void> {
   const [rawCommand, ...rest] = process.argv.slice(2);
@@ -215,7 +231,7 @@ async function connectCommand(args: string[]): Promise<void> {
   const connected = await postJson<{ sessionId: string; agentId: string; pollMs?: number }>(`${serverUrl}/api/agent/connect`, {
     code: pairCode,
     agentName,
-    version: "0.1.0"
+    version: "0.1.1"
   });
   const agentId = connected.agentId;
   const sessionId = connected.sessionId;
@@ -322,9 +338,9 @@ async function runAgentScan(
         });
       }
     });
-    const files = await collectRunFiles(outputDir);
-    await postJson(`${serverUrl}/api/agent/result`, { sessionId, agentId, taskId: task.id, run, files }, maxAgentResultBodyBytes);
-    console.log(`Uploaded ${run.summary.findingCount} findings from ${outputDir}`);
+    const manifest = await uploadRunArtifacts(serverUrl, sessionId, agentId, task.id, outputDir, run);
+    await postJson(`${serverUrl}/api/agent/result`, { sessionId, agentId, taskId: task.id, run, manifest });
+    console.log(`Uploaded ${run.summary.findingCount} findings and ${formatBytes(manifest.totalBytes)} of evidence from ${outputDir}`);
   } catch (error) {
     await postJson(`${serverUrl}/api/agent/result`, {
       sessionId,
@@ -336,10 +352,50 @@ async function runAgentScan(
   }
 }
 
-async function collectRunFiles(outputDir: string): Promise<UploadedRunFile[]> {
-  const files: UploadedRunFile[] = [];
-  let totalBytes = 0;
-  const maxTotalBytes = 70_000_000;
+async function uploadRunArtifacts(
+  serverUrl: string,
+  sessionId: string,
+  agentId: string,
+  taskId: string,
+  outputDir: string,
+  run: CartographRun
+): Promise<UploadedRunManifest> {
+  const files = await collectUploadableRunFiles(outputDir);
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  await postJson(`${serverUrl}/api/agent/progress`, {
+    sessionId,
+    agentId,
+    taskId,
+    event: {
+      id: randomId("progress"),
+      timestamp: new Date().toISOString(),
+      phase: "writing",
+      message: `Uploading ${files.length} temporary evidence artifact(s) to the hosted UI`,
+      targetUrl: run.startUrl,
+      statesFound: run.summary.stateCount,
+      transitionsFound: run.summary.transitionCount,
+      findingsFound: run.summary.findingCount,
+      actionsAttempted: run.summary.actionsAttempted,
+      maxActions: run.options.maxActions
+    } satisfies ScanProgressEvent
+  }).catch(() => undefined);
+  for (const file of files) {
+    await uploadRunArtifactFile(serverUrl, sessionId, agentId, taskId, file);
+  }
+  return {
+    files: files.map((file) => ({ path: file.relativePath, size: file.size, chunks: Math.max(1, Math.ceil(file.size / maxAgentArtifactChunkBytes)) })),
+    totalBytes
+  };
+}
+
+type UploadableRunFile = {
+  filePath: string;
+  relativePath: string;
+  size: number;
+};
+
+async function collectUploadableRunFiles(outputDir: string): Promise<UploadableRunFile[]> {
+  const files: UploadableRunFile[] = [];
   const visit = async (dir: string) => {
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
@@ -350,15 +406,54 @@ async function collectRunFiles(outputDir: string): Promise<UploadedRunFile[]> {
       }
       if (!entry.isFile()) continue;
       const fileStat = await stat(filePath);
-      totalBytes += fileStat.size;
-      if (totalBytes > maxTotalBytes) throw new Error("Run artifacts are too large to upload to the hosted UI.");
       const relativePath = path.relative(outputDir, filePath).split(path.sep).join("/");
-      const content = await readFile(filePath);
-      files.push({ path: relativePath, contentBase64: content.toString("base64") });
+      const uploadPath = uploadableRunArtifactPath(relativePath);
+      if (!uploadPath) continue;
+      files.push({ filePath, relativePath: uploadPath, size: fileStat.size });
     }
   };
   await visit(outputDir);
-  return files;
+  return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+}
+
+async function uploadRunArtifactFile(
+  serverUrl: string,
+  sessionId: string,
+  agentId: string,
+  taskId: string,
+  file: UploadableRunFile
+): Promise<void> {
+  const chunks = Math.max(1, Math.ceil(file.size / maxAgentArtifactChunkBytes));
+  const handle = await open(file.filePath, "r");
+  try {
+    for (let index = 0; index < chunks; index += 1) {
+      const offset = index * maxAgentArtifactChunkBytes;
+      const length = Math.min(maxAgentArtifactChunkBytes, file.size - offset);
+      const buffer = Buffer.alloc(length);
+      if (length > 0) {
+        const result = await handle.read(buffer, 0, length, offset);
+        if (result.bytesRead !== length) throw new Error(`Unable to read ${file.relativePath} for upload.`);
+      }
+      await postBinary(agentArtifactUploadUrl(serverUrl, sessionId, agentId, taskId, file.relativePath, index, chunks), buffer);
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+function agentArtifactUploadUrl(serverUrl: string, sessionId: string, agentId: string, taskId: string, relativePath: string, index: number, total: number): string {
+  const params = new URLSearchParams({ sessionId, agentId, taskId, path: relativePath, index: String(index), total: String(total) });
+  return `${serverUrl}/api/agent/artifact?${params.toString()}`;
+}
+
+async function postBinary<T = unknown>(url: string, payload: Buffer): Promise<T> {
+  const body = payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer;
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: { "content-type": "application/octet-stream" },
+    body
+  });
+  return parseJsonResponse<T>(response, maxJsonBodyBytes);
 }
 
 async function postJson<T = unknown>(url: string, payload: unknown, maxResponseBytes = maxJsonBodyBytes): Promise<T> {
@@ -482,6 +577,10 @@ async function handleReportRequest(
     await handleAgentProgressRequest(request, response, state);
     return;
   }
+  if (url.pathname === "/api/agent/artifact" && request.method === "PUT") {
+    await handleAgentArtifactRequest(request, response, state, url);
+    return;
+  }
   if (url.pathname === "/api/agent/result" && request.method === "POST") {
     await handleAgentResultRequest(request, response, state);
     return;
@@ -546,7 +645,7 @@ async function handleScanRequest(request: IncomingMessage, response: ServerRespo
     const parsed = new URL(targetUrl);
     const agentSession = sessionFromBody(state, body);
     if (agentSession) {
-      handleAgentBackedScanRequest(response, agentSession, body, targetUrl);
+      await handleAgentBackedScanRequest(response, agentSession, body, targetUrl);
       return;
     }
     if (isPublicRequest(request) && isLocalTarget(parsed)) {
@@ -634,6 +733,7 @@ async function handleAgentSessionRequest(
   if (!session || session.status === "expired") {
     session = createAgentSession(state);
   }
+  session.lastUiSeenAt = new Date().toISOString();
   refreshAgentPresence(session);
   sendJson(response, publicAgentSession(session));
 }
@@ -663,6 +763,7 @@ async function handleAgentConnectRequest(request: IncomingMessage, response: Ser
 }
 
 function handleAgentTasksRequest(response: ServerResponse, state: ReportServerState, url: URL): void {
+  cleanupAgentSessions(state);
   const session = authenticatedAgentSession(state, url.searchParams.get("sessionId"), url.searchParams.get("agentId"));
   if (!session) {
     sendJson(response, { error: "Agent session not found." }, 404);
@@ -693,6 +794,69 @@ async function handleAgentProgressRequest(request: IncomingMessage, response: Se
   sendJson(response, { ok: true });
 }
 
+async function handleAgentArtifactRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState, url: URL): Promise<void> {
+  const session = authenticatedAgentSession(state, url.searchParams.get("sessionId"), url.searchParams.get("agentId"));
+  if (!session) {
+    sendJson(response, { error: "Agent session not found." }, 404);
+    return;
+  }
+  const taskId = String(url.searchParams.get("taskId") ?? "");
+  if (!taskId || session.activeTaskId !== taskId) {
+    sendJson(response, { error: "Artifact upload does not match the active scan." }, 409);
+    return;
+  }
+  const relativePath = uploadableRunArtifactPath(String(url.searchParams.get("path") ?? ""));
+  if (!relativePath) {
+    sendJson(response, { error: "Artifact path is not uploadable." }, 400);
+    return;
+  }
+  let chunkIndex: number;
+  let totalChunks: number;
+  try {
+    chunkIndex = numberFromSearchParam(url, "index", 0, { min: 0, max: 100_000 });
+    totalChunks = numberFromSearchParam(url, "total", 1, { min: 1, max: 100_001 });
+  } catch (error) {
+    sendJson(response, { error: error instanceof Error ? error.message : String(error) }, 400);
+    return;
+  }
+  if (chunkIndex >= totalChunks) {
+    sendJson(response, { error: "Artifact chunk index is outside the chunk count." }, 400);
+    return;
+  }
+
+  let body: Buffer;
+  try {
+    body = await readBinaryBody(request, maxAgentArtifactChunkBytes);
+  } catch (error) {
+    sendJson(response, { error: error instanceof Error ? error.message : String(error) }, 413);
+    return;
+  }
+  session.lastSeenAt = new Date().toISOString();
+  session.status = "connected";
+  const nextTotal = (session.artifactBytesUploaded ?? 0) + body.byteLength;
+  if (nextTotal > maxAgentArtifactSessionBytes) {
+    session.progress = progressErrorSnapshot(session.progress, `Temporary artifact upload exceeded ${formatBytes(maxAgentArtifactSessionBytes)} for this scan.`);
+    sendJson(response, { error: session.progress.message }, 413);
+    return;
+  }
+
+  const runDir = session.pendingRunDir ?? agentRunDir(session.id, taskId);
+  session.pendingRunDir = runDir;
+  const filePath = safeRunFilePath(runDir, relativePath);
+  if (!filePath) {
+    sendJson(response, { error: "Artifact path is unsafe." }, 400);
+    return;
+  }
+  await mkdir(path.dirname(filePath), { recursive: true });
+  if (chunkIndex === 0) {
+    await writeFile(filePath, body);
+  } else {
+    await appendFile(filePath, body);
+  }
+  session.artifactBytesUploaded = nextTotal;
+  sendJson(response, { ok: true, receivedBytes: body.byteLength, totalBytes: nextTotal });
+}
+
 async function handleAgentResultRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
   const body = await readJsonBody(request, maxAgentResultBodyBytes);
   const session = authenticatedAgentSession(state, String(body.sessionId ?? ""), String(body.agentId ?? ""));
@@ -702,20 +866,23 @@ async function handleAgentResultRequest(request: IncomingMessage, response: Serv
   }
   session.lastSeenAt = new Date().toISOString();
   session.status = "connected";
-  session.activeTaskId = undefined;
   if (typeof body.error === "string" && body.error) {
+    await clearAgentSessionArtifacts(session);
+    session.activeTaskId = undefined;
     session.progress = progressErrorSnapshot(session.progress, body.error);
     sendJson(response, { ok: true });
     return;
   }
-  const files = Array.isArray(body.files) ? (body.files as UploadedRunFile[]) : [];
+  const files = Array.isArray(body.files) ? (body.files as LegacyUploadedRunFile[]) : [];
+  const taskId = String(body.taskId ?? session.activeTaskId ?? "latest");
   const run = body.run as CartographRun | undefined;
-  if (!run || !files.length) {
+  const runDir = session.pendingRunDir ?? session.runDir ?? agentRunDir(session.id, taskId);
+  if (!run) {
+    session.activeTaskId = undefined;
     session.progress = progressErrorSnapshot(session.progress, "Local companion did not upload run artifacts.");
     sendJson(response, { error: "Missing run artifacts." }, 400);
     return;
   }
-  const runDir = path.join(rootDir, ".cartograph", "runs", `hosted-${session.id}`);
   await mkdir(runDir, { recursive: true });
   for (const file of files) {
     const filePath = safeRunFilePath(runDir, file.path);
@@ -723,6 +890,9 @@ async function handleAgentResultRequest(request: IncomingMessage, response: Serv
     await mkdir(path.dirname(filePath), { recursive: true });
     await writeFile(filePath, Buffer.from(file.contentBase64, "base64"));
   }
+  await writeFinalRunFiles(runDir, run);
+  session.activeTaskId = undefined;
+  session.pendingRunDir = undefined;
   session.runDir = runDir;
   state.runDir = runDir;
   const timestamp = new Date().toISOString();
@@ -756,7 +926,7 @@ async function handleAgentDisconnectRequest(request: IncomingMessage, response: 
   sendJson(response, { ok: true });
 }
 
-function handleAgentBackedScanRequest(response: ServerResponse, session: AgentSession, body: Record<string, unknown>, targetUrl: string): void {
+async function handleAgentBackedScanRequest(response: ServerResponse, session: AgentSession, body: Record<string, unknown>, targetUrl: string): Promise<void> {
   if (session.status !== "connected" || !session.agentId) {
     sendJson(response, { error: "Local companion is not connected.", requiresAgent: true, progress: session.progress }, 409);
     return;
@@ -770,6 +940,7 @@ function handleAgentBackedScanRequest(response: ServerResponse, session: AgentSe
   }
   const options = agentScanOptionsFromBody(body, targetUrl);
   const task: AgentTask = { id: randomId("task"), type: "scan", createdAt: new Date().toISOString(), payload: options };
+  await clearAgentSessionArtifacts(session);
   session.tasks.push(task);
   session.activeTaskId = task.id;
   session.progress = {
@@ -916,8 +1087,10 @@ function cleanupAgentSessions(state: ReportServerState): void {
   for (const session of state.agentSessions.values()) {
     const expiredBeforeConnect = session.status === "waiting" && Date.parse(session.expiresAt) < now;
     const disconnectedTooLong = session.status === "disconnected" && session.lastSeenAt && Date.parse(session.lastSeenAt) + agentSessionTtlMs < now;
-    if (!expiredBeforeConnect && !disconnectedTooLong) continue;
+    const uiStale = session.lastUiSeenAt && Date.parse(session.lastUiSeenAt) + agentUiStaleMs < now && !session.progress.active && !session.activeTaskId;
+    if (!expiredBeforeConnect && !disconnectedTooLong && !uiStale) continue;
     session.status = "expired";
+    void clearAgentSessionArtifacts(session);
     state.agentSessions.delete(session.id);
     state.agentSessionsByCode.delete(session.code);
   }
@@ -976,6 +1149,28 @@ function agentScanOptionsFromBody(body: Record<string, unknown>, targetUrl: stri
     allowExternal: body.allowExternal === true,
     headed: body.headed === true
   };
+}
+
+function agentRunDir(sessionId: string, taskId: string): string {
+  return path.join(agentArtifactRoot, sessionId, taskId);
+}
+
+async function clearAgentSessionArtifacts(session: AgentSession): Promise<void> {
+  session.pendingRunDir = undefined;
+  session.runDir = undefined;
+  session.artifactBytesUploaded = 0;
+  await rm(path.join(agentArtifactRoot, session.id), { recursive: true, force: true }).catch(() => undefined);
+}
+
+async function writeFinalRunFiles(runDir: string, run: CartographRun): Promise<void> {
+  const json = JSON.stringify(run, null, 2);
+  await Promise.all([
+    writeFile(path.join(runDir, "run.json"), json),
+    writeFile(path.join(runDir, "report-data.json"), json),
+    writeFile(path.join(runDir, "findings-report.md"), generateFindingsMarkdown(run)),
+    writeFile(path.join(runDir, "report.md"), generateMarkdownReport(run)),
+    writeFile(path.join(runDir, "findings-export.json"), generateFindingsJson(run))
+  ]);
 }
 
 function isPublicRequest(request: IncomingMessage): boolean {
@@ -1136,6 +1331,18 @@ async function readJsonBody(request: IncomingMessage, maxBytes = maxJsonBodyByte
   return raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
 }
 
+async function readBinaryBody(request: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let byteLength = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    byteLength += buffer.byteLength;
+    if (byteLength > maxBytes) throw new Error("Request body too large.");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 function numberFromBody(body: Record<string, unknown>, key: string, fallback: number, limits: { min: number; max: number }): number {
   const raw = body[key];
   if (raw === undefined || raw === null || raw === "") return fallback;
@@ -1144,6 +1351,23 @@ function numberFromBody(body: Record<string, unknown>, key: string, fallback: nu
     throw new Error(`${key} must be a number between ${limits.min} and ${limits.max}.`);
   }
   return Math.floor(value);
+}
+
+function numberFromSearchParam(url: URL, key: string, fallback: number, limits: { min: number; max: number }): number {
+  const raw = url.searchParams.get(key);
+  if (raw === null || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < limits.min || value > limits.max) {
+    throw new Error(`${key} must be a number between ${limits.min} and ${limits.max}.`);
+  }
+  return Math.floor(value);
+}
+
+function numberFromEnv(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
 function isLocalTarget(url: URL): boolean {
@@ -1196,6 +1420,13 @@ function openUrl(url: string): void {
   } catch {
     // Opening a browser is a convenience; serving the report is the contract.
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
 }
 
 async function closeServers(servers: Server[]): Promise<void> {

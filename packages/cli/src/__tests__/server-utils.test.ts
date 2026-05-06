@@ -1,6 +1,6 @@
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { runAssetPath, safeJoin } from "../server-utils.js";
+import { runAssetPath, safeJoin, uploadableRunArtifactPath } from "../server-utils.js";
 
 describe("server path utilities", () => {
   it("keeps resolved paths inside the requested root", () => {
@@ -19,5 +19,12 @@ describe("server path utilities", () => {
     expect(runAssetPath(runDir, "/replays/finding.spec.ts")).toBe(path.join(runDir, "replays/finding.spec.ts"));
     expect(runAssetPath(runDir, "/screenshots/../run.json")).toBeNull();
     expect(runAssetPath(runDir, "/findings.json")).toBeNull();
+  });
+
+  it("accepts only evidence artifact uploads", () => {
+    expect(uploadableRunArtifactPath("/screenshots/state.png")).toBe("screenshots/state.png");
+    expect(uploadableRunArtifactPath("replays/finding.spec.ts")).toBe("replays/finding.spec.ts");
+    expect(uploadableRunArtifactPath("run.json")).toBeNull();
+    expect(uploadableRunArtifactPath("screenshots/bad\0name.png")).toBeNull();
   });
 });

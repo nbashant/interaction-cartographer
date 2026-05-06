@@ -23,3 +23,10 @@ export function runAssetPath(runDir: string, requestPath: string): string | null
   }
   return null;
 }
+
+export function uploadableRunArtifactPath(relativePath: string): string | null {
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (normalized.includes("\0")) return null;
+  if (normalized.startsWith("screenshots/") || normalized.startsWith("replays/")) return normalized;
+  return null;
+}
