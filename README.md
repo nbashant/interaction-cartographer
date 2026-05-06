@@ -33,6 +33,29 @@ The scan writes a run folder under `.cartograph/runs/` and makes these artifacts
 - screenshots
 - replay scripts
 
+## Hosted Workflow
+
+The hosted UI can pair with a local companion so a public site can still scan the app running on your own machine:
+
+1. Open the hosted report UI.
+2. Copy the one-line companion command shown in the UI.
+3. Run it in the same local environment where your app is running.
+4. Return to the hosted UI and scan `http://localhost:3000`.
+
+The command looks like this:
+
+```bash
+npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
+```
+
+For local repo testing before the npm package is published:
+
+```bash
+npm run cartograph -- connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
+```
+
+The companion connects outbound to the hosted server, receives only allowlisted scan/stop tasks, runs Playwright locally, and uploads the finished findings/screenshots back into the paired browser session.
+
 ## CLI Workflow
 
 Run directly against a local product:

@@ -37,6 +37,16 @@ type ViewportFilter = ViewportName | "all";
 type ArtifactTab = "states" | "transitions" | "actions";
 type ReportView = "findings" | "quality";
 type QualityFilter = BuildQualityCategoryId | "all";
+type AgentSession = {
+  sessionId: string;
+  pairCode: string;
+  expiresAt: string;
+  status: "waiting" | "connected" | "disconnected" | "expired";
+  connected: boolean;
+  agentName?: string;
+  lastSeenAt?: string;
+  progress?: ScanProgressSnapshot;
+};
 type ScanPreferences = {
   viewports: string;
   allowSubmit: boolean;
@@ -50,6 +60,7 @@ const severityOrder: Record<FindingSeverity, number> = {
 };
 const scanPreferencesStorageKey = "interaction-cartographer.scanPreferences.v1";
 const targetUrlStorageKey = "interaction-cartographer.targetUrl.v1";
+const agentSessionStorageKey = "interaction-cartographer.agentSession.v1";
 const scanLimits = {
   actions: { min: 1, max: 1000, recommended: 80, rangeLabel: "1-1000" },
   depth: { min: 0, max: 30, recommended: 6, rangeLabel: "0-30" }
@@ -101,16 +112,60 @@ function writeTargetUrl(url: string): void {
   }
 }
 
-async function fetchRunData(): Promise<CartographRun | null> {
-  const response = await fetch("/api/run", { cache: "no-store" });
+function isHostedUi(): boolean {
+  return !["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+}
+
+function readAgentSessionId(): string {
+  try {
+    return window.sessionStorage.getItem(agentSessionStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function writeAgentSessionId(sessionId: string): void {
+  try {
+    window.sessionStorage.setItem(agentSessionStorageKey, sessionId);
+  } catch {
+    // Pairing should still work without session storage; reload just creates a new code.
+  }
+}
+
+function sessionQuery(sessionId?: string | null): string {
+  return sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+}
+
+function assetHref(assetPath: string, sessionId?: string | null): string {
+  return `/${assetPath}${sessionQuery(sessionId)}`;
+}
+
+async function fetchRunData(sessionId?: string | null): Promise<CartographRun | null> {
+  const response = await fetch(`/api/run${sessionQuery(sessionId)}`, { cache: "no-store" });
   if (!response.ok) throw new Error(`Failed to load run data: ${response.status}`);
   return response.json() as Promise<CartographRun | null>;
 }
 
-async function fetchScanProgress(): Promise<ScanProgressSnapshot | null> {
-  const response = await fetch("/api/scan/progress", { cache: "no-store" });
+async function fetchScanProgress(sessionId?: string | null): Promise<ScanProgressSnapshot | null> {
+  const response = await fetch(`/api/scan/progress${sessionQuery(sessionId)}`, { cache: "no-store" });
   if (!response.ok) return null;
   return response.json() as Promise<ScanProgressSnapshot>;
+}
+
+async function createOrResumeAgentSession(sessionId?: string): Promise<AgentSession> {
+  const response = await fetch("/api/agent/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId })
+  });
+  if (!response.ok) throw new Error(`Failed to create pairing session: ${response.status}`);
+  return response.json() as Promise<AgentSession>;
+}
+
+async function fetchAgentSession(sessionId: string): Promise<AgentSession | null> {
+  const response = await fetch(`/api/agent/session${sessionQuery(sessionId)}`, { cache: "no-store" });
+  if (!response.ok) return null;
+  return response.json() as Promise<AgentSession>;
 }
 
 function numberOrDefault(value: string, fallback: number): number {
@@ -119,12 +174,14 @@ function numberOrDefault(value: string, fallback: number): number {
 }
 
 function App() {
+  const hostedUi = useMemo(() => isHostedUi(), []);
   const [run, setRun] = useState<CartographRun | null>(null);
   const [targetUrl, setTargetUrl] = useState(() => readTargetUrl());
   const [maxActions, setMaxActions] = useState("");
   const [maxDepth, setMaxDepth] = useState("");
   const [scanPreferences, setScanPreferences] = useState<ScanPreferences>(() => readScanPreferences());
   const scanPreferencesRef = useRef(scanPreferences);
+  const [agentSession, setAgentSession] = useState<AgentSession | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [stopRequested, setStopRequested] = useState(false);
@@ -137,6 +194,8 @@ function App() {
   const [activeView, setActiveView] = useState<ReportView>("findings");
   const [qualityFilter, setQualityFilter] = useState<QualityFilter>("all");
   const { viewports, allowSubmit, allowExternal } = scanPreferences;
+  const agentSessionId = hostedUi ? agentSession?.sessionId : undefined;
+  const agentConnected = !hostedUi || agentSession?.connected === true;
 
   function applyRunData(data: CartographRun | null) {
     setRun(data);
@@ -160,7 +219,13 @@ function App() {
     let cancelled = false;
     const loadInitialState = async () => {
       try {
-        const [runData, progress] = await Promise.all([fetchRunData(), fetchScanProgress()]);
+        let session: AgentSession | null = null;
+        if (hostedUi) {
+          session = await createOrResumeAgentSession(readAgentSessionId());
+          writeAgentSessionId(session.sessionId);
+          if (!cancelled) setAgentSession(session);
+        }
+        const [runData, progress] = await Promise.all([fetchRunData(session?.sessionId), fetchScanProgress(session?.sessionId)]);
         if (cancelled) return;
         applyRunData(runData);
         if (progress) applyProgress(progress);
@@ -174,7 +239,28 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [hostedUi]);
+
+  useEffect(() => {
+    if (!hostedUi || !agentSession?.sessionId) return;
+    let cancelled = false;
+    const refreshAgent = async () => {
+      const session = await fetchAgentSession(agentSession.sessionId).catch(() => null);
+      if (cancelled || !session) return;
+      setAgentSession(session);
+      if (session.progress?.active || session.progress?.phase === "completed" || session.progress?.phase === "stopped" || session.progress?.phase === "error") {
+        applyProgress(session.progress);
+      }
+    };
+    const interval = window.setInterval(() => {
+      void refreshAgent();
+    }, 1500);
+    void refreshAgent();
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [hostedUi, agentSession?.sessionId]);
 
   function updateScanPreferences(nextPreferences: Partial<ScanPreferences>) {
     const updated = { ...scanPreferencesRef.current, ...nextPreferences };
@@ -188,7 +274,7 @@ function App() {
     let cancelled = false;
     const refreshProgress = async () => {
       try {
-        const progress = await fetchScanProgress();
+        const progress = await fetchScanProgress(agentSessionId);
         if (cancelled || !progress) return;
         if (progress.active || progress.phase !== "idle") setScanProgress(progress);
         if (progress.targetUrl) {
@@ -197,7 +283,7 @@ function App() {
         }
         if (!progress.active && progress.phase !== "idle") {
           if (progress.phase === "completed" || progress.phase === "stopped") {
-            const latestRun = await fetchRunData();
+            const latestRun = await fetchRunData(agentSessionId);
             if (!cancelled) applyRunData(latestRun);
           } else if (progress.phase === "error") {
             setError(progress.message);
@@ -219,7 +305,7 @@ function App() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [scanning, stopRequested]);
+  }, [scanning, stopRequested, agentSessionId]);
 
   const selectedFinding = useMemo(() => run?.findings.find((finding) => finding.id === selectedFindingId) ?? null, [run, selectedFindingId]);
   const selectedState = useMemo(() => run?.states.find((state) => state.id === selectedFinding?.stateId) ?? null, [run, selectedFinding]);
@@ -237,6 +323,10 @@ function App() {
   async function scan(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const scanTarget = targetUrl.trim();
+    if (hostedUi && !agentConnected) {
+      setError("Connect the local companion before scanning a localhost app from the hosted UI.");
+      return;
+    }
     const actionsLimit = numberOrDefault(maxActions, scanLimits.actions.recommended);
     const depthLimit = numberOrDefault(maxDepth, scanLimits.depth.recommended);
     setScanning(true);
@@ -270,10 +360,15 @@ function App() {
           maxDepth: depthLimit,
           viewports,
           allowSubmit,
-          allowExternal
+          allowExternal,
+          sessionId: agentSessionId
         })
       });
-      const data = (await response.json()) as { run?: CartographRun; progress?: ScanProgressSnapshot; error?: string };
+      const data = (await response.json()) as { run?: CartographRun; progress?: ScanProgressSnapshot; queued?: boolean; error?: string; requiresAgent?: boolean };
+      if (data.queued) {
+        if (data.progress) setScanProgress(data.progress);
+        return;
+      }
       if (!response.ok || !data.run) {
         if (data.progress?.active) {
           applyProgress(data.progress);
@@ -288,7 +383,7 @@ function App() {
     } catch (scanError) {
       setError(scanError instanceof Error ? scanError.message : String(scanError));
     } finally {
-      const progress = await fetchScanProgress();
+      const progress = await fetchScanProgress(agentSessionId);
       if (progress?.active) {
         applyProgress(progress);
       } else {
@@ -302,7 +397,11 @@ function App() {
     setError(null);
     setStopRequested(true);
     try {
-      const response = await fetch("/api/scan/stop", { method: "POST" });
+      const response = await fetch("/api/scan/stop", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: agentSessionId })
+      });
       const data = (await response.json()) as { stopped?: boolean; message?: string; error?: string };
       if (!response.ok) throw new Error(data.error ?? `Stop failed: ${response.status}`);
       if (data.stopped) {
@@ -338,8 +437,8 @@ function App() {
           </button>
         </div>
         <div className="top-actions">
-          <ExportButton href="/api/export/json" label="JSON" icon={<FileJson size={15} />} disabled={!run || scanning} />
-          <ExportButton href="/api/export/markdown" label="Markdown" icon={<FileText size={15} />} disabled={!run || scanning} />
+          <ExportButton href={`/api/export/json${sessionQuery(agentSessionId)}`} label="JSON" icon={<FileJson size={15} />} disabled={!run || scanning} />
+          <ExportButton href={`/api/export/markdown${sessionQuery(agentSessionId)}`} label="Markdown" icon={<FileText size={15} />} disabled={!run || scanning} />
         </div>
       </header>
 
@@ -388,7 +487,7 @@ function App() {
               Allow external links
             </label>
             <div className="scan-actions">
-              <button className="primary-button scan-button" type="submit" disabled={scanning}>
+              <button className="primary-button scan-button" type="submit" disabled={scanning || !agentConnected}>
                 {scanning ? <Loader2 size={15} className="spin" aria-hidden="true" /> : <Search size={15} aria-hidden="true" />}
                 {scanning ? "Scanning" : "Scan real app"}
               </button>
@@ -400,6 +499,7 @@ function App() {
               ) : null}
             </div>
           </form>
+          {hostedUi && agentSession ? <LocalCompanionPanel session={agentSession} /> : null}
           {error ? <div className="inline-error"><AlertTriangle size={15} /> {error}</div> : null}
           {scanning || stopRequested ? <ScanActivityPanel progress={scanProgress} /> : null}
         </section>
@@ -415,6 +515,7 @@ function App() {
         {run && activeView === "quality" && quality ? (
           <QualityScoreboard
             quality={quality}
+            exportHref={`/api/export/markdown${sessionQuery(agentSessionId)}`}
             activeCategory={qualityFilter}
             setActiveCategory={setQualityFilter}
             onOpenRisk={(risk) => {
@@ -446,7 +547,7 @@ function App() {
               />
             </aside>
             <section className="evidence-column">
-              <FindingDetail finding={selectedFinding} state={selectedState} transition={selectedTransition} />
+              <FindingDetail finding={selectedFinding} state={selectedState} transition={selectedTransition} assetSessionId={agentSessionId} />
               <ArtifactExplorer run={run} activeTab={artifactTab} setActiveTab={setArtifactTab} />
             </section>
           </section>
@@ -462,6 +563,31 @@ function ExportButton({ href, label, icon, disabled }: { href: string; label: st
       {icon}
       Export {label}
     </button>
+  );
+}
+
+function LocalCompanionPanel({ session }: { session: AgentSession }) {
+  const command = `npx -y @interaction-cartographer/cli@latest connect --pair ${session.pairCode} --server ${window.location.origin}`;
+  const connected = session.connected;
+  async function copyCommand() {
+    await navigator.clipboard?.writeText(command).catch(() => undefined);
+  }
+
+  return (
+    <section className={`companion-panel ${connected ? "is-connected" : ""}`} aria-label="Local companion">
+      <div className="companion-status">
+        <span className="status-dot" aria-hidden="true" />
+        <div>
+          <strong>{connected ? "Local companion connected" : "Connect local companion"}</strong>
+          <span>{connected ? session.agentName ?? "Ready to scan localhost from your machine" : "Run this once in the app's local terminal."}</span>
+        </div>
+      </div>
+      <code>{command}</code>
+      <button className="ghost-button" type="button" onClick={copyCommand}>
+        <FileText size={14} aria-hidden="true" />
+        Copy
+      </button>
+    </section>
   );
 }
 
@@ -632,11 +758,13 @@ function SummaryChip({ icon, label, value }: { icon: React.ReactNode; label: str
 
 function QualityScoreboard({
   quality,
+  exportHref,
   activeCategory,
   setActiveCategory,
   onOpenRisk
 }: {
   quality: BuildQualityScoreboard;
+  exportHref: string;
   activeCategory: QualityFilter;
   setActiveCategory: (category: QualityFilter) => void;
   onOpenRisk: (risk: BuildQualityRisk) => void;
@@ -726,7 +854,7 @@ function QualityScoreboard({
         <div className="quality-export">
           <strong>Markdown export</strong>
           <p>The Markdown findings export includes this scorecard, top risks, and formula.</p>
-          <button className="ghost-button" type="button" onClick={() => (window.location.href = "/api/export/markdown")}>
+          <button className="ghost-button" type="button" onClick={() => (window.location.href = exportHref)}>
             <FileText size={15} aria-hidden="true" />
             Export Markdown
           </button>
@@ -826,11 +954,13 @@ function FindingsList({
 function FindingDetail({
   finding,
   state,
-  transition
+  transition,
+  assetSessionId
 }: {
   finding: UIFinding | null;
   state: UIState | null;
   transition: UITransition | null;
+  assetSessionId?: string | null;
 }) {
   if (!finding || !state) {
     return (
@@ -848,14 +978,14 @@ function FindingDetail({
           <h1>{finding.title}</h1>
           <p>{finding.detector} · {state.viewport} · {state.url}</p>
         </div>
-        <a className="ghost-link" href={`/${finding.screenshotPath}`} target="_blank" rel="noreferrer">
+        <a className="ghost-link" href={assetHref(finding.screenshotPath, assetSessionId)} target="_blank" rel="noreferrer">
           Open screenshot
         </a>
       </div>
 
       <div className="evidence-layout">
         <div className="screenshot-frame">
-          <img src={`/${finding.screenshotPath}`} alt={`Screenshot for ${finding.title}`} />
+          <img src={assetHref(finding.screenshotPath, assetSessionId)} alt={`Screenshot for ${finding.title}`} />
         </div>
         <div className="evidence-stack">
           <DetailItem label="Detail" value={finding.detail} />

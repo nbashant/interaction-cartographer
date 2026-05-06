@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import http, { type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -25,15 +27,61 @@ type ActiveScan = {
   startedAt: string;
   targetUrl: string;
 };
+type AgentScanOptions = {
+  url: string;
+  maxActions: number;
+  maxDepth: number;
+  maxDurationMs: number;
+  viewports: string;
+  allowSubmit: boolean;
+  allowExternal: boolean;
+  headed: boolean;
+};
+type AgentTask =
+  | {
+      id: string;
+      type: "scan";
+      createdAt: string;
+      payload: AgentScanOptions;
+    }
+  | {
+      id: string;
+      type: "stop";
+      createdAt: string;
+    };
+type AgentSessionStatus = "waiting" | "connected" | "disconnected" | "expired";
+type AgentSession = {
+  id: string;
+  code: string;
+  createdAt: string;
+  expiresAt: string;
+  status: AgentSessionStatus;
+  agentId?: string;
+  agentName?: string;
+  lastSeenAt?: string;
+  activeTaskId?: string;
+  tasks: AgentTask[];
+  progress: ScanProgressSnapshot;
+  runDir?: string;
+};
+type UploadedRunFile = {
+  path: string;
+  contentBase64: string;
+};
 type ReportServerState = {
   runDir: string;
   activeScan: ActiveScan | null;
   progress: ScanProgressSnapshot;
+  agentSessions: Map<string, AgentSession>;
+  agentSessionsByCode: Map<string, string>;
 };
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const userCwd = process.env.INIT_CWD ? path.resolve(process.env.INIT_CWD) : process.cwd();
 const maxJsonBodyBytes = 1_000_000;
+const maxAgentResultBodyBytes = 90_000_000;
+const agentSessionTtlMs = 10 * 60 * 1000;
+const agentPollMs = 900;
 
 async function main(): Promise<void> {
   const [rawCommand, ...rest] = process.argv.slice(2);
@@ -59,6 +107,10 @@ async function main(): Promise<void> {
   }
   if (command === "export") {
     await exportCommand(args);
+    return;
+  }
+  if (command === "connect" || command === "scan-ui") {
+    await connectCommand(args);
     return;
   }
 
@@ -154,6 +206,195 @@ async function exportCommand(args: string[]): Promise<void> {
   throw new Error(`Unsupported export format: ${format}. Use json or markdown.`);
 }
 
+async function connectCommand(args: string[]): Promise<void> {
+  const { positional, flags } = parseArgs(args);
+  const pairCode = String(flags.pair ?? positional[0] ?? "").trim().toUpperCase();
+  if (!pairCode) throw new Error("Missing pairing code. Usage: cartograph connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com");
+  const serverUrl = normalizeServerUrl(String(flags.server ?? flags.host ?? "https://interaction-cartographer.onrender.com"));
+  const agentName = String(flags.name ?? os.hostname());
+  const connected = await postJson<{ sessionId: string; agentId: string; pollMs?: number }>(`${serverUrl}/api/agent/connect`, {
+    code: pairCode,
+    agentName,
+    version: "0.1.0"
+  });
+  const agentId = connected.agentId;
+  const sessionId = connected.sessionId;
+  const pollMs = connected.pollMs ?? agentPollMs;
+  let activeScan: Promise<void> | null = null;
+  const activeControllerRef: { current: AbortController | null } = { current: null };
+  let shuttingDown = false;
+
+  console.log(`Local companion connected to ${serverUrl}`);
+  console.log(`Session ${sessionId}. Keep this terminal open while scanning.`);
+
+  const disconnect = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    activeControllerRef.current?.abort();
+    try {
+      await postJson(`${serverUrl}/api/agent/disconnect`, { sessionId, agentId });
+    } catch {
+      // The process is already exiting; disconnect is best-effort.
+    }
+  };
+  process.once("SIGINT", () => {
+    void disconnect().finally(() => process.exit(0));
+  });
+  process.once("SIGTERM", () => {
+    void disconnect().finally(() => process.exit(0));
+  });
+
+  while (!shuttingDown) {
+    try {
+      const response = await getJson<{ tasks: AgentTask[]; pollMs?: number }>(
+        `${serverUrl}/api/agent/tasks?sessionId=${encodeURIComponent(sessionId)}&agentId=${encodeURIComponent(agentId)}`
+      );
+      for (const task of response.tasks) {
+        if (task.type === "stop") {
+          if (activeControllerRef.current) {
+            console.log("Stop requested from hosted UI.");
+            activeControllerRef.current.abort();
+          }
+          continue;
+        }
+        if (task.type === "scan") {
+          if (activeScan) {
+            await postJson(`${serverUrl}/api/agent/result`, {
+              sessionId,
+              agentId,
+              taskId: task.id,
+              error: "A local scan is already running."
+            });
+            continue;
+          }
+          activeScan = runAgentScan(serverUrl, sessionId, agentId, task, (controller) => {
+            activeControllerRef.current = controller;
+          }).finally(() => {
+            activeControllerRef.current = null;
+            activeScan = null;
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Companion poll failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await delay(pollMs);
+  }
+}
+
+async function runAgentScan(
+  serverUrl: string,
+  sessionId: string,
+  agentId: string,
+  task: Extract<AgentTask, { type: "scan" }>,
+  setController: (controller: AbortController) => void
+): Promise<void> {
+  const payload = task.payload;
+  const parsed = new URL(payload.url);
+  if (!isLocalTarget(parsed) && !payload.allowExternal) {
+    await postJson(`${serverUrl}/api/agent/result`, {
+      sessionId,
+      agentId,
+      taskId: task.id,
+      error: "The local companion only scans localhost/127.0.0.1 targets unless external links are explicitly allowed."
+    });
+    return;
+  }
+  const outputDir = path.join(userCwd, ".cartograph", "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-agent-${slug(parsed.host + parsed.pathname)}`);
+  const controller = new AbortController();
+  setController(controller);
+  console.log(`Scanning ${payload.url}`);
+  try {
+    const run = await cartograph(payload.url, {
+      outputDir,
+      maxActions: payload.maxActions,
+      maxDepth: payload.maxDepth,
+      maxDurationMs: payload.maxDurationMs,
+      viewports: parseViewports(payload.viewports),
+      allowSubmit: payload.allowSubmit,
+      allowExternal: payload.allowExternal,
+      sameOriginOnly: payload.allowExternal ? false : true,
+      headed: payload.headed,
+      signal: controller.signal,
+      onProgress: (event) => {
+        void postJson(`${serverUrl}/api/agent/progress`, { sessionId, agentId, taskId: task.id, event }).catch((error) => {
+          console.error(`Progress upload failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+    });
+    const files = await collectRunFiles(outputDir);
+    await postJson(`${serverUrl}/api/agent/result`, { sessionId, agentId, taskId: task.id, run, files }, maxAgentResultBodyBytes);
+    console.log(`Uploaded ${run.summary.findingCount} findings from ${outputDir}`);
+  } catch (error) {
+    await postJson(`${serverUrl}/api/agent/result`, {
+      sessionId,
+      agentId,
+      taskId: task.id,
+      error: error instanceof Error ? error.message : String(error)
+    }).catch(() => undefined);
+    console.error(`Scan failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function collectRunFiles(outputDir: string): Promise<UploadedRunFile[]> {
+  const files: UploadedRunFile[] = [];
+  let totalBytes = 0;
+  const maxTotalBytes = 70_000_000;
+  const visit = async (dir: string) => {
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const filePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(filePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const fileStat = await stat(filePath);
+      totalBytes += fileStat.size;
+      if (totalBytes > maxTotalBytes) throw new Error("Run artifacts are too large to upload to the hosted UI.");
+      const relativePath = path.relative(outputDir, filePath).split(path.sep).join("/");
+      const content = await readFile(filePath);
+      files.push({ path: relativePath, contentBase64: content.toString("base64") });
+    }
+  };
+  await visit(outputDir);
+  return files;
+}
+
+async function postJson<T = unknown>(url: string, payload: unknown, maxResponseBytes = maxJsonBodyBytes): Promise<T> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseJsonResponse<T>(response, maxResponseBytes);
+}
+
+async function getJson<T = unknown>(url: string): Promise<T> {
+  const response = await fetch(url, { cache: "no-store" });
+  return parseJsonResponse<T>(response, maxJsonBodyBytes);
+}
+
+async function parseJsonResponse<T>(response: Response, maxResponseBytes: number): Promise<T> {
+  const text = await response.text();
+  if (text.length > maxResponseBytes) throw new Error("Response body too large.");
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const message = data && typeof data === "object" && "error" in data ? String((data as { error: unknown }).error) : `Request failed: ${response.status}`;
+    throw new Error(message);
+  }
+  return data as T;
+}
+
+function normalizeServerUrl(value: string): string {
+  const withProtocol = value.startsWith("http://") || value.startsWith("https://") ? value : `https://${value}`;
+  return withProtocol.replace(/\/+$/, "");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function optionsFromFlags(flags: Flags, url: string): Partial<CrawlOptions> {
   return {
     outputDir: flags.out ? resolveUserPath(String(flags.out)) : undefined,
@@ -190,7 +431,13 @@ function printQualityResult(run: CartographRun, flags: Flags): boolean {
 async function serveReport(initialRunDir: string, options: { port: number; host: string; open: boolean }): Promise<Server> {
   buildPackage("@interaction-cartographer/report", "apps/report/dist");
   const distDir = path.join(rootDir, "apps/report/dist");
-  const state: ReportServerState = { runDir: initialRunDir, activeScan: null, progress: emptyProgressSnapshot() };
+  const state: ReportServerState = {
+    runDir: initialRunDir,
+    activeScan: null,
+    progress: emptyProgressSnapshot(),
+    agentSessions: new Map(),
+    agentSessionsByCode: new Map()
+  };
   const server = await listenWithFallback(options.port, options.host, (request, response) => {
     void handleReportRequest(request, response, state, distDir);
   });
@@ -211,7 +458,36 @@ async function handleReportRequest(
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (url.pathname === "/api/run") {
-    await sendOptionalJson(response, path.join(state.runDir, "report-data.json"));
+    const runDir = runDirForRequest(state, url);
+    if (url.searchParams.has("sessionId") && !runDir) {
+      sendJson(response, null);
+      return;
+    }
+    await sendOptionalJson(response, path.join(runDir ?? state.runDir, "report-data.json"));
+    return;
+  }
+  if (url.pathname === "/api/agent/session") {
+    await handleAgentSessionRequest(request, response, state, url);
+    return;
+  }
+  if (url.pathname === "/api/agent/connect" && request.method === "POST") {
+    await handleAgentConnectRequest(request, response, state);
+    return;
+  }
+  if (url.pathname === "/api/agent/tasks") {
+    handleAgentTasksRequest(response, state, url);
+    return;
+  }
+  if (url.pathname === "/api/agent/progress" && request.method === "POST") {
+    await handleAgentProgressRequest(request, response, state);
+    return;
+  }
+  if (url.pathname === "/api/agent/result" && request.method === "POST") {
+    await handleAgentResultRequest(request, response, state);
+    return;
+  }
+  if (url.pathname === "/api/agent/disconnect" && request.method === "POST") {
+    await handleAgentDisconnectRequest(request, response, state);
     return;
   }
   if (url.pathname === "/api/scan" && request.method === "POST") {
@@ -219,23 +495,38 @@ async function handleReportRequest(
     return;
   }
   if (url.pathname === "/api/scan/progress") {
-    sendJson(response, currentProgressSnapshot(state));
+    sendJson(response, progressForRequest(state, url));
     return;
   }
   if (url.pathname === "/api/scan/stop" && request.method === "POST") {
-    handleStopScanRequest(response, state);
+    await handleStopScanRequest(request, response, state);
     return;
   }
   if (url.pathname === "/api/export/markdown") {
-    await sendFile(response, path.join(state.runDir, "findings-report.md"), "text/markdown; charset=utf-8");
+    const runDir = runDirForRequest(state, url);
+    if (url.searchParams.has("sessionId") && !runDir) {
+      sendJson(response, { error: "No run is available for this paired session." }, 404);
+      return;
+    }
+    await sendFile(response, path.join(runDir ?? state.runDir, "findings-report.md"), "text/markdown; charset=utf-8");
     return;
   }
   if (url.pathname === "/api/export/json") {
-    await sendFile(response, path.join(state.runDir, "findings-export.json"), "application/json");
+    const runDir = runDirForRequest(state, url);
+    if (url.searchParams.has("sessionId") && !runDir) {
+      sendJson(response, { error: "No run is available for this paired session." }, 404);
+      return;
+    }
+    await sendFile(response, path.join(runDir ?? state.runDir, "findings-export.json"), "application/json");
     return;
   }
   if (url.pathname.startsWith("/screenshots/") || url.pathname.startsWith("/replays/")) {
-    await sendMaybeFile(response, runAssetPath(state.runDir, url.pathname), mimeFor(url.pathname));
+    const runDir = runDirForRequest(state, url);
+    if (url.searchParams.has("sessionId") && !runDir) {
+      await sendMaybeFile(response, null, mimeFor(url.pathname));
+      return;
+    }
+    await sendMaybeFile(response, runAssetPath(runDir ?? state.runDir, url.pathname), mimeFor(url.pathname));
     return;
   }
   const filePath = url.pathname === "/" ? path.join(distDir, "index.html") : safeJoin(distDir, url.pathname);
@@ -252,6 +543,20 @@ async function handleScanRequest(request: IncomingMessage, response: ServerRespo
     const body = await readJsonBody(request);
     const targetUrl = String(body.url ?? "").trim();
     if (!targetUrl) throw new Error("Missing target URL.");
+    const parsed = new URL(targetUrl);
+    const agentSession = sessionFromBody(state, body);
+    if (agentSession) {
+      handleAgentBackedScanRequest(response, agentSession, body, targetUrl);
+      return;
+    }
+    if (isPublicRequest(request) && isLocalTarget(parsed)) {
+      sendJson(response, {
+        error: "Connect the local companion before scanning a localhost app from the hosted UI.",
+        requiresAgent: true,
+        progress: emptyProgressSnapshot()
+      }, 409);
+      return;
+    }
     if (state.activeScan) {
       const progress = currentProgressSnapshot(state);
       state.progress = progress;
@@ -261,7 +566,6 @@ async function handleScanRequest(request: IncomingMessage, response: ServerRespo
       }, 409);
       return;
     }
-    const parsed = new URL(targetUrl);
     if (!isLocalTarget(parsed) && body.allowExternal !== true) {
       throw new Error("The report scanner only scans localhost/127.0.0.1 targets unless allowExternal is explicitly true.");
     }
@@ -314,7 +618,197 @@ async function handleScanRequest(request: IncomingMessage, response: ServerRespo
   }
 }
 
-function handleStopScanRequest(response: ServerResponse, state: ReportServerState): void {
+async function handleAgentSessionRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  state: ReportServerState,
+  url: URL
+): Promise<void> {
+  cleanupAgentSessions(state);
+  let sessionId = url.searchParams.get("sessionId") ?? "";
+  if (request.method === "POST") {
+    const body: Record<string, unknown> = await readJsonBody(request).catch(() => ({}));
+    sessionId = String(body.sessionId ?? sessionId ?? "");
+  }
+  let session = sessionId ? state.agentSessions.get(sessionId) : undefined;
+  if (!session || session.status === "expired") {
+    session = createAgentSession(state);
+  }
+  refreshAgentPresence(session);
+  sendJson(response, publicAgentSession(session));
+}
+
+async function handleAgentConnectRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
+  cleanupAgentSessions(state);
+  const body = await readJsonBody(request);
+  const code = String(body.code ?? "").trim().toUpperCase();
+  const sessionId = state.agentSessionsByCode.get(code);
+  const session = sessionId ? state.agentSessions.get(sessionId) : undefined;
+  if (!session || session.status === "expired") {
+    sendJson(response, { error: "Pairing code is invalid or expired." }, 404);
+    return;
+  }
+  const timestamp = new Date().toISOString();
+  session.status = "connected";
+  session.agentId = randomId("agent");
+  session.agentName = String(body.agentName ?? "Local companion").slice(0, 80);
+  session.lastSeenAt = timestamp;
+  session.progress = {
+    ...emptyProgressSnapshot(),
+    phase: "idle",
+    message: "Local companion connected.",
+    updatedAt: timestamp
+  };
+  sendJson(response, { sessionId: session.id, agentId: session.agentId, pollMs: agentPollMs });
+}
+
+function handleAgentTasksRequest(response: ServerResponse, state: ReportServerState, url: URL): void {
+  const session = authenticatedAgentSession(state, url.searchParams.get("sessionId"), url.searchParams.get("agentId"));
+  if (!session) {
+    sendJson(response, { error: "Agent session not found." }, 404);
+    return;
+  }
+  session.lastSeenAt = new Date().toISOString();
+  session.status = "connected";
+  const tasks = session.tasks.splice(0, session.tasks.length);
+  sendJson(response, { tasks, pollMs: agentPollMs });
+}
+
+async function handleAgentProgressRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
+  const body = await readJsonBody(request);
+  const session = authenticatedAgentSession(state, String(body.sessionId ?? ""), String(body.agentId ?? ""));
+  if (!session) {
+    sendJson(response, { error: "Agent session not found." }, 404);
+    return;
+  }
+  const event = body.event as ScanProgressEvent | undefined;
+  if (!event || typeof event.message !== "string") {
+    sendJson(response, { error: "Missing progress event." }, 400);
+    return;
+  }
+  session.lastSeenAt = new Date().toISOString();
+  session.status = "connected";
+  session.activeTaskId = String(body.taskId ?? session.activeTaskId ?? "");
+  session.progress = progressSnapshotFromEvent(event, session.progress);
+  sendJson(response, { ok: true });
+}
+
+async function handleAgentResultRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
+  const body = await readJsonBody(request, maxAgentResultBodyBytes);
+  const session = authenticatedAgentSession(state, String(body.sessionId ?? ""), String(body.agentId ?? ""));
+  if (!session) {
+    sendJson(response, { error: "Agent session not found." }, 404);
+    return;
+  }
+  session.lastSeenAt = new Date().toISOString();
+  session.status = "connected";
+  session.activeTaskId = undefined;
+  if (typeof body.error === "string" && body.error) {
+    session.progress = progressErrorSnapshot(session.progress, body.error);
+    sendJson(response, { ok: true });
+    return;
+  }
+  const files = Array.isArray(body.files) ? (body.files as UploadedRunFile[]) : [];
+  const run = body.run as CartographRun | undefined;
+  if (!run || !files.length) {
+    session.progress = progressErrorSnapshot(session.progress, "Local companion did not upload run artifacts.");
+    sendJson(response, { error: "Missing run artifacts." }, 400);
+    return;
+  }
+  const runDir = path.join(rootDir, ".cartograph", "runs", `hosted-${session.id}`);
+  await mkdir(runDir, { recursive: true });
+  for (const file of files) {
+    const filePath = safeRunFilePath(runDir, file.path);
+    if (!filePath) continue;
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, Buffer.from(file.contentBase64, "base64"));
+  }
+  session.runDir = runDir;
+  state.runDir = runDir;
+  const timestamp = new Date().toISOString();
+  session.progress = progressSnapshotFromEvent({
+    id: randomId("progress"),
+    timestamp,
+    phase: run.summary.status === "stopped" ? "stopped" : "completed",
+    message: run.summary.status === "stopped" ? "Scan stopped; partial results are ready." : "Scan completed; findings are ready.",
+    targetUrl: run.startUrl,
+    statesFound: run.summary.stateCount,
+    transitionsFound: run.summary.transitionCount,
+    findingsFound: run.summary.findingCount,
+    actionsAttempted: run.summary.actionsAttempted,
+    maxActions: session.progress.maxActions
+  }, session.progress);
+  sendJson(response, { ok: true });
+}
+
+async function handleAgentDisconnectRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
+  const body: Record<string, unknown> = await readJsonBody(request).catch(() => ({}));
+  const session = authenticatedAgentSession(state, String(body.sessionId ?? ""), String(body.agentId ?? ""));
+  if (!session) {
+    sendJson(response, { ok: true });
+    return;
+  }
+  session.status = "disconnected";
+  session.lastSeenAt = new Date().toISOString();
+  if (session.progress.active) {
+    session.progress = progressErrorSnapshot(session.progress, "Local companion disconnected.");
+  }
+  sendJson(response, { ok: true });
+}
+
+function handleAgentBackedScanRequest(response: ServerResponse, session: AgentSession, body: Record<string, unknown>, targetUrl: string): void {
+  if (session.status !== "connected" || !session.agentId) {
+    sendJson(response, { error: "Local companion is not connected.", requiresAgent: true, progress: session.progress }, 409);
+    return;
+  }
+  if (session.progress.active || session.activeTaskId) {
+    sendJson(response, {
+      error: `A scan is already running for ${session.progress.targetUrl ?? targetUrl}. Stop it before starting another one.`,
+      progress: session.progress
+    }, 409);
+    return;
+  }
+  const options = agentScanOptionsFromBody(body, targetUrl);
+  const task: AgentTask = { id: randomId("task"), type: "scan", createdAt: new Date().toISOString(), payload: options };
+  session.tasks.push(task);
+  session.activeTaskId = task.id;
+  session.progress = {
+    ...emptyProgressSnapshot(),
+    active: true,
+    phase: "starting",
+    message: `Queued scan for local companion: ${targetUrl}`,
+    targetUrl,
+    maxActions: options.maxActions,
+    startedAt: task.createdAt,
+    updatedAt: task.createdAt
+  };
+  sendJson(response, { queued: true, viaAgent: true, progress: session.progress }, 202);
+}
+
+async function handleStopScanRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
+  const body = await readJsonBody(request).catch(() => ({}));
+  const agentSession = sessionFromBody(state, body);
+  if (agentSession) {
+    if (agentSession.status !== "connected") {
+      sendJson(response, { stopped: false, message: "Local companion is not connected." });
+      return;
+    }
+    if (!agentSession.progress.active && !agentSession.activeTaskId) {
+      sendJson(response, { stopped: false, message: "No active scan is running." });
+      return;
+    }
+    const task: AgentTask = { id: randomId("task"), type: "stop", createdAt: new Date().toISOString() };
+    agentSession.tasks.push(task);
+    agentSession.progress = {
+      ...agentSession.progress,
+      active: true,
+      phase: "writing",
+      message: "Stop requested; waiting for local companion to wrap partial scan results",
+      updatedAt: task.createdAt
+    };
+    sendJson(response, { stopped: true, viaAgent: true, targetUrl: agentSession.progress.targetUrl, startedAt: agentSession.progress.startedAt });
+    return;
+  }
   if (!state.activeScan) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ stopped: false, message: "No active scan is running." }));
@@ -399,6 +893,123 @@ function progressErrorSnapshot(previous: ScanProgressSnapshot, message: string):
     maxActions: previous.maxActions
   };
   return progressSnapshotFromEvent(event, previous);
+}
+
+function createAgentSession(state: ReportServerState): AgentSession {
+  const createdAt = new Date();
+  const session: AgentSession = {
+    id: randomId("session"),
+    code: pairCode(),
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(createdAt.getTime() + agentSessionTtlMs).toISOString(),
+    status: "waiting",
+    tasks: [],
+    progress: emptyProgressSnapshot()
+  };
+  state.agentSessions.set(session.id, session);
+  state.agentSessionsByCode.set(session.code, session.id);
+  return session;
+}
+
+function cleanupAgentSessions(state: ReportServerState): void {
+  const now = Date.now();
+  for (const session of state.agentSessions.values()) {
+    const expiredBeforeConnect = session.status === "waiting" && Date.parse(session.expiresAt) < now;
+    const disconnectedTooLong = session.status === "disconnected" && session.lastSeenAt && Date.parse(session.lastSeenAt) + agentSessionTtlMs < now;
+    if (!expiredBeforeConnect && !disconnectedTooLong) continue;
+    session.status = "expired";
+    state.agentSessions.delete(session.id);
+    state.agentSessionsByCode.delete(session.code);
+  }
+}
+
+function publicAgentSession(session: AgentSession) {
+  return {
+    sessionId: session.id,
+    pairCode: session.code,
+    expiresAt: session.expiresAt,
+    status: session.status,
+    connected: session.status === "connected",
+    agentName: session.agentName,
+    lastSeenAt: session.lastSeenAt,
+    progress: session.progress
+  };
+}
+
+function authenticatedAgentSession(state: ReportServerState, sessionId: string | null, agentId: string | null): AgentSession | null {
+  if (!sessionId || !agentId) return null;
+  const session = state.agentSessions.get(sessionId);
+  if (!session || session.agentId !== agentId || session.status === "expired") return null;
+  return session;
+}
+
+function sessionFromBody(state: ReportServerState, body: Record<string, unknown>): AgentSession | null {
+  const sessionId = String(body.sessionId ?? "");
+  if (!sessionId) return null;
+  return state.agentSessions.get(sessionId) ?? null;
+}
+
+function runDirForRequest(state: ReportServerState, url: URL): string | null {
+  const sessionId = url.searchParams.get("sessionId");
+  if (!sessionId) return null;
+  return state.agentSessions.get(sessionId)?.runDir ?? null;
+}
+
+function progressForRequest(state: ReportServerState, url: URL): ScanProgressSnapshot {
+  const sessionId = url.searchParams.get("sessionId");
+  if (!sessionId) return currentProgressSnapshot(state);
+  const session = state.agentSessions.get(sessionId);
+  if (session) refreshAgentPresence(session);
+  return session?.progress ?? emptyProgressSnapshot();
+}
+
+function agentScanOptionsFromBody(body: Record<string, unknown>, targetUrl: string): AgentScanOptions {
+  const viewports = String(body.viewports ?? "desktop,mobile");
+  parseViewports(viewports);
+  return {
+    url: targetUrl,
+    maxActions: numberFromBody(body, "maxActions", 80, { min: 1, max: 1_000 }),
+    maxDepth: numberFromBody(body, "maxDepth", 6, { min: 0, max: 30 }),
+    maxDurationMs: numberFromBody(body, "maxDurationMs", 150_000, { min: 1_000, max: 600_000 }),
+    viewports,
+    allowSubmit: body.allowSubmit !== false,
+    allowExternal: body.allowExternal === true,
+    headed: body.headed === true
+  };
+}
+
+function isPublicRequest(request: IncomingMessage): boolean {
+  const host = String(request.headers.host ?? "").split(":")[0].toLowerCase();
+  return Boolean(host && !["localhost", "127.0.0.1", "::1", "[::1]"].includes(host));
+}
+
+function safeRunFilePath(root: string, relativePath: string): string | null {
+  const normalized = relativePath.replace(/^[/\\]+/, "");
+  if (!normalized || normalized.includes("\0")) return null;
+  const filePath = path.resolve(root, normalized);
+  const resolvedRoot = path.resolve(root);
+  if (filePath !== resolvedRoot && !filePath.startsWith(`${resolvedRoot}${path.sep}`)) return null;
+  return filePath;
+}
+
+function randomId(prefix: string): string {
+  return `${prefix}-${randomBytes(12).toString("hex")}`;
+}
+
+function refreshAgentPresence(session: AgentSession): void {
+  if (session.status !== "connected" || !session.lastSeenAt) return;
+  if (Date.now() - Date.parse(session.lastSeenAt) < agentPollMs * 6) return;
+  session.status = "disconnected";
+  if (session.progress.active) {
+    session.progress = progressErrorSnapshot(session.progress, "Local companion connection was lost.");
+  }
+}
+
+function pairCode(): string {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let value = "";
+  for (const byte of randomBytes(8)) value += alphabet[byte % alphabet.length];
+  return `${value.slice(0, 4)}-${value.slice(4, 8)}`;
 }
 
 async function serveStaticApp(
@@ -512,13 +1123,13 @@ async function sendOptionalJson(response: ServerResponse, filePath: string): Pro
   }
 }
 
-async function readJsonBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(request: IncomingMessage, maxBytes = maxJsonBodyBytes): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let byteLength = 0;
   for await (const chunk of request) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     byteLength += buffer.byteLength;
-    if (byteLength > maxJsonBodyBytes) throw new Error("Request body too large.");
+    if (byteLength > maxBytes) throw new Error("Request body too large.");
     chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf8").trim();
@@ -597,12 +1208,14 @@ function printHelp(): void {
 Usage:
   cartograph run <url> [--out .cartograph/runs/my-app] [--viewports desktop,mobile] [--max-actions 150] [--max-depth 6] [--quality-threshold 75] [--headed]
   cartograph view [run-dir] [--port 4173] [--host 127.0.0.1] [--no-open]
+  cartograph connect --pair 8K4P-JD91 [--server https://interaction-cartographer.onrender.com]
   cartograph demo [--out .cartograph/runs/demo] [--no-open] [--no-view]
   cartograph export <run-dir> --format json|markdown [--include-quality]
 
 Examples:
   cartograph view
   cartograph run http://localhost:3000 --out .cartograph/runs/my-app
+  cartograph connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
   cartograph export .cartograph/runs/my-app --format json
 `);
 }

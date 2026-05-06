@@ -410,6 +410,71 @@ button:disabled {
   font-weight: 800;
 }
 
+.companion-panel {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: minmax(220px, auto) minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.companion-panel.is-connected {
+  border-color: #9dcfd1;
+  background: #f2fbfb;
+}
+
+.companion-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.companion-status strong,
+.companion-status span {
+  display: block;
+}
+
+.companion-status strong {
+  font-size: 13px;
+}
+
+.companion-status span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--warning);
+  box-shadow: 0 0 0 3px rgba(183, 121, 31, 0.12);
+}
+
+.is-connected .status-dot {
+  background: var(--selected);
+  box-shadow: 0 0 0 3px rgba(25, 122, 138, 0.12);
+}
+
+.companion-panel code {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: #273240;
+  font-size: 12px;
+}
+
 .scan-activity {
   margin-top: 12px;
   display: grid;
@@ -1159,6 +1224,7 @@ button:disabled {
 
 @media (max-width: 1180px) {
   .scan-form,
+  .companion-panel,
   .findings-workbench,
   .quality-workbench,
   .quality-hero,

@@ -15,7 +15,7 @@ First-time flow:
 3. UI shows one command:
 
    ```bash
-   npx -y interaction-cartographer@latest connect --pair 8K4P-JD91
+   npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
    ```
 
 4. User runs the command locally.
@@ -34,5 +34,14 @@ Security constraints:
 - The scanner uses an ephemeral browser profile by default.
 - Stop and Disconnect controls stay visible while connected or scanning.
 - Results upload only the evidence needed for the report: findings, screenshots, network/console evidence, replay paths, and export artifacts.
+
+Implemented transport:
+
+- Hosted UI calls `/api/agent/session` to create or resume a pairing session.
+- Local companion calls `/api/agent/connect` with the pair code.
+- The companion polls `/api/agent/tasks` for allowlisted `scan` and `stop` tasks.
+- Scan progress streams back through `/api/agent/progress`.
+- Finished runs upload through `/api/agent/result`, including report JSON, exports, screenshots, and replay scripts.
+- Hosted UI reads paired results using `?sessionId=...` on run, export, screenshot, and progress endpoints.
 
 This keeps the hosted UI as the main product while preserving the local machine boundary needed for real localhost scanning.
