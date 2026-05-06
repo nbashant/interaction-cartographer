@@ -566,8 +566,13 @@ function ExportButton({ href, label, icon, disabled }: { href: string; label: st
   );
 }
 
+const defaultHostedOrigin = "https://interaction-cartographer.onrender.com";
+
 function LocalCompanionPanel({ session }: { session: AgentSession }) {
-  const command = `npx -y @interaction-cartographer/cli@latest connect --pair ${session.pairCode} --server ${window.location.origin}`;
+  const command =
+    window.location.origin === defaultHostedOrigin
+      ? `npx -y @interaction-cartographer/cli@latest connect --pair ${session.pairCode}`
+      : `npx -y @interaction-cartographer/cli@latest connect --pair ${session.pairCode} --server ${window.location.origin}`;
   const connected = session.connected;
   async function copyCommand() {
     await navigator.clipboard?.writeText(command).catch(() => undefined);
