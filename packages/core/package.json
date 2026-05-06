@@ -1,7 +1,7 @@
 {
   "name": "@interaction-cartographer/core",
   "version": "0.1.0",
-  "description": "Core crawler, detectors, reports, and exports for Interaction Cartographer.",
+  "description": "Core crawler, detectors, reports, and exports for Glitchly.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

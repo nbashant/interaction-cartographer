@@ -58,9 +58,9 @@ const severityOrder: Record<FindingSeverity, number> = {
   warning: 2,
   info: 1
 };
-const scanPreferencesStorageKey = "interaction-cartographer.scanPreferences.v1";
-const targetUrlStorageKey = "interaction-cartographer.targetUrl.v1";
-const agentSessionStorageKey = "interaction-cartographer.agentSession.v1";
+const scanPreferencesStorageKey = "glitchly.scanPreferences.v1";
+const targetUrlStorageKey = "glitchly.targetUrl.v1";
+const agentSessionStorageKey = "glitchly.agentSession.v1";
 const scanLimits = {
   actions: { min: 1, max: 1000, recommended: 80, rangeLabel: "1-1000" },
   depth: { min: 0, max: 30, recommended: 6, rangeLabel: "0-30" }
@@ -422,7 +422,7 @@ function App() {
         <div className="brand-block">
           <Route size={20} aria-hidden="true" />
           <div>
-            <strong>Interaction Cartographer</strong>
+            <strong>Glitchly</strong>
             <span>{run ? run.startUrl : "real localhost scanner"}</span>
           </div>
         </div>
@@ -566,7 +566,7 @@ function ExportButton({ href, label, icon, disabled }: { href: string; label: st
   );
 }
 
-const defaultHostedOrigin = "https://interaction-cartographer.onrender.com";
+const defaultHostedOrigin = "https://glitchly.onrender.com";
 
 function LocalCompanionPanel({ session }: { session: AgentSession }) {
   const command =

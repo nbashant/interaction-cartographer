@@ -3,7 +3,7 @@
 ## LinkedIn Post
 
 ```text
-I built Interaction Cartographer.
+I built Glitchly.
 
 Give it a local web app URL and it explores the product like a user:
 - clicks buttons
@@ -27,7 +27,7 @@ Short version:
 ```text
 I built a tool that opens any local web app, explores it like a user, and generates a visual map of reachable screens, broken interactions, and UI bugs.
 
-It is called Interaction Cartographer.
+It is called Glitchly.
 
 The goal: make product QA feel like looking at a map instead of hunting through random clicks.
 ```
@@ -37,7 +37,7 @@ The goal: make product QA feel like looking at a map instead of hunting through 
 0-3 seconds:
 
 - Show a real product running at `localhost:3000`.
-- Open Interaction Cartographer and enter that URL.
+- Open Glitchly and enter that URL.
 
 3-8 seconds:
 
@@ -63,7 +63,7 @@ The goal: make product QA feel like looking at a map instead of hunting through 
 
 Closing frame:
 
-- Interaction Cartographer - Map the product your users can actually reach.
+- Glitchly - Map the product your users can actually reach.
 
 ## Screenshot Checklist
 

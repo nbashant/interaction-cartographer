@@ -61,7 +61,7 @@ ${quality.formula.description}
 export function generateMarkdownReport(run: CartographRun): string {
   const summary = run.summary;
   const findings = run.findings.map(findingMarkdown).join("\n");
-  return `# Interaction Cartographer Report
+  return `# Glitchly Report
 
 Start URL: ${run.startUrl}
 
@@ -131,7 +131,7 @@ ${replay || "No replay path recorded."}
     })
     .join("\n");
 
-  return `# Interaction Cartographer Findings
+  return `# Glitchly Findings
 
 Target: ${run.startUrl}
 

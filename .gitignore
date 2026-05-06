@@ -5,6 +5,7 @@ dist/
 .env.*
 .render/
 .artifacts/
+.glitchly/runs/
 .cartograph/runs/
 apps/*/dist/
 packages/*/dist/

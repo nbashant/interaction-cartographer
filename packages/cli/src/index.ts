@@ -97,7 +97,7 @@ const maxAgentArtifactSessionBytes = numberFromEnv("CARTOGRAPH_MAX_AGENT_ARTIFAC
 const agentSessionTtlMs = 10 * 60 * 1000;
 const agentUiStaleMs = 5 * 60 * 1000;
 const agentPollMs = 900;
-const agentArtifactRoot = path.join(os.tmpdir(), "interaction-cartographer-sessions");
+const agentArtifactRoot = path.join(os.tmpdir(), "glitchly-sessions");
 
 async function main(): Promise<void> {
   const [rawCommand, ...rest] = process.argv.slice(2);
@@ -141,7 +141,7 @@ async function runCommand(args: string[]): Promise<void> {
   if (!url) throw new Error("Missing URL. Usage: cartograph run <url>");
   const options = optionsFromFlags(flags, url);
   const run = await cartograph(url, options);
-  console.log(`Interaction Cartographer completed ${run.summary.stateCount} states, ${run.summary.transitionCount} transitions, ${run.summary.findingCount} findings.`);
+  console.log(`Glitchly completed ${run.summary.stateCount} states, ${run.summary.transitionCount} transitions, ${run.summary.findingCount} findings.`);
   const passedQualityThreshold = printQualityResult(run, flags);
   console.log(`Artifacts written to ${run.options.outputDir}`);
   if (!passedQualityThreshold) process.exitCode = 1;
@@ -149,7 +149,7 @@ async function runCommand(args: string[]): Promise<void> {
 
 async function viewCommand(args: string[]): Promise<void> {
   const { positional, flags } = parseArgs(args);
-  const runDir = positional[0] ? resolveUserPath(positional[0]) : path.join(rootDir, ".cartograph", "runs", "latest");
+  const runDir = positional[0] ? resolveUserPath(positional[0]) : path.join(rootDir, ".glitchly", "runs", "latest");
   const port = numberFromFlag(flags, "port", defaultPort(), { min: 1, max: 65_535 });
   const host = String(flags.host ?? process.env.HOST ?? "127.0.0.1");
   await serveReport(runDir, { port, host, open: flags.open !== false && flags["no-open"] !== true });
@@ -157,7 +157,7 @@ async function viewCommand(args: string[]): Promise<void> {
 
 async function demoCommand(args: string[]): Promise<void> {
   const { flags } = parseArgs(args);
-  const outDir = flags.out ? resolveUserPath(String(flags.out)) : path.join(rootDir, ".cartograph", "runs", "demo");
+  const outDir = flags.out ? resolveUserPath(String(flags.out)) : path.join(rootDir, ".glitchly", "runs", "demo");
   const reportPort = numberFromFlag(flags, "port", 4173, { min: 1, max: 65_535 });
   const hubPort = numberFromFlag(flags, "hub-port", 4309, { min: 1, max: 65_535 });
   const atlasPort = numberFromFlag(flags, "atlas-port", 4310, { min: 1, max: 65_535 });
@@ -203,7 +203,7 @@ async function demoCommand(args: string[]): Promise<void> {
 
 async function exportCommand(args: string[]): Promise<void> {
   const { positional, flags } = parseArgs(args);
-  const runDir = resolveUserPath(positional[0] ?? ".cartograph/runs/demo");
+  const runDir = resolveUserPath(positional[0] ?? ".glitchly/runs/demo");
   const format = String(flags.format ?? "json").toLowerCase();
   const run = await loadRun(runDir);
   if (format === "markdown" || format === "md") {
@@ -225,13 +225,13 @@ async function exportCommand(args: string[]): Promise<void> {
 async function connectCommand(args: string[]): Promise<void> {
   const { positional, flags } = parseArgs(args);
   const pairCode = String(flags.pair ?? positional[0] ?? "").trim().toUpperCase();
-  if (!pairCode) throw new Error("Missing pairing code. Usage: cartograph connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com");
-  const serverUrl = normalizeServerUrl(String(flags.server ?? flags.host ?? "https://interaction-cartographer.onrender.com"));
+  if (!pairCode) throw new Error("Missing pairing code. Usage: cartograph connect --pair 8K4P-JD91 --server https://glitchly.onrender.com");
+  const serverUrl = normalizeServerUrl(String(flags.server ?? flags.host ?? "https://glitchly.onrender.com"));
   const agentName = String(flags.name ?? os.hostname());
   const connected = await postJson<{ sessionId: string; agentId: string; pollMs?: number }>(`${serverUrl}/api/agent/connect`, {
     code: pairCode,
     agentName,
-    version: "0.1.1"
+    version: "0.1.2"
   });
   const agentId = connected.agentId;
   const sessionId = connected.sessionId;
@@ -316,7 +316,7 @@ async function runAgentScan(
     });
     return;
   }
-  const outputDir = path.join(userCwd, ".cartograph", "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-agent-${slug(parsed.host + parsed.pathname)}`);
+  const outputDir = path.join(userCwd, ".glitchly", "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-agent-${slug(parsed.host + parsed.pathname)}`);
   const controller = new AbortController();
   setController(controller);
   console.log(`Scanning ${payload.url}`);
@@ -540,7 +540,7 @@ async function serveReport(initialRunDir: string, options: { port: number; host:
   const port = typeof address === "object" && address ? address.port : options.port;
   const displayHost = options.host === "0.0.0.0" ? "127.0.0.1" : options.host;
   const url = `http://${displayHost}:${port}`;
-  console.log(`Interaction Cartographer report running at ${url}`);
+  console.log(`Glitchly report running at ${url}`);
   if (options.open) openUrl(url);
   return server;
 }
@@ -670,7 +670,7 @@ async function handleScanRequest(request: IncomingMessage, response: ServerRespo
     }
     const outDir = body.outDir
       ? resolveUserPath(String(body.outDir))
-      : path.join(rootDir, ".cartograph", "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${slug(parsed.host + parsed.pathname)}`);
+      : path.join(rootDir, ".glitchly", "runs", `${new Date().toISOString().replace(/[:.]/g, "-")}-${slug(parsed.host + parsed.pathname)}`);
     await mkdir(outDir, { recursive: true });
     const maxActions = numberFromBody(body, "maxActions", 80, { min: 1, max: 1_000 });
     const maxDepth = numberFromBody(body, "maxDepth", 6, { min: 0, max: 30 });
@@ -1236,7 +1236,7 @@ async function serveDemoHub(port: number, atlasUrl: string, checkoutUrl: string)
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Interaction Cartographer Demo Hub</title>
+  <title>Glitchly Demo Hub</title>
   <style>
     body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f6f7f9; color: #202736; }
     main { min-height: 100vh; display: grid; place-items: center; }
@@ -1250,7 +1250,7 @@ async function serveDemoHub(port: number, atlasUrl: string, checkoutUrl: string)
 <body>
   <main data-cartograph-main>
     <section>
-      <h1>Interaction Cartographer Demo Hub</h1>
+      <h1>Glitchly Demo Hub</h1>
       <p>Two local demo apps with intentional UI failures.</p>
       <a href="${atlasUrl}" data-cartograph="open-atlas">Open Atlas CRM</a>
       <a href="${checkoutUrl}" data-cartograph="open-checkout">Open Mini Checkout</a>
@@ -1434,20 +1434,20 @@ async function closeServers(servers: Server[]): Promise<void> {
 }
 
 function printHelp(): void {
-  console.log(`Interaction Cartographer
+  console.log(`Glitchly
 
 Usage:
-  cartograph run <url> [--out .cartograph/runs/my-app] [--viewports desktop,mobile] [--max-actions 150] [--max-depth 6] [--quality-threshold 75] [--headed]
+  cartograph run <url> [--out .glitchly/runs/my-app] [--viewports desktop,mobile] [--max-actions 150] [--max-depth 6] [--quality-threshold 75] [--headed]
   cartograph view [run-dir] [--port 4173] [--host 127.0.0.1] [--no-open]
-  cartograph connect --pair 8K4P-JD91 [--server https://interaction-cartographer.onrender.com]
-  cartograph demo [--out .cartograph/runs/demo] [--no-open] [--no-view]
+  cartograph connect --pair 8K4P-JD91 [--server https://glitchly.onrender.com]
+  cartograph demo [--out .glitchly/runs/demo] [--no-open] [--no-view]
   cartograph export <run-dir> --format json|markdown [--include-quality]
 
 Examples:
   cartograph view
-  cartograph run http://localhost:3000 --out .cartograph/runs/my-app
-  cartograph connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
-  cartograph export .cartograph/runs/my-app --format json
+  cartograph run http://localhost:3000 --out .glitchly/runs/my-app
+  cartograph connect --pair 8K4P-JD91 --server https://glitchly.onrender.com
+  cartograph export .glitchly/runs/my-app --format json
 `);
 }
 

@@ -116,7 +116,7 @@ function run(overrides: Partial<CartographRun> = {}): CartographRun {
       sameOriginOnly: true,
       denyActionLabels: [],
       allowActionLabels: [],
-      outputDir: ".cartograph/runs/quality-test",
+      outputDir: ".glitchly/runs/quality-test",
       headed: false
     },
     summary: {

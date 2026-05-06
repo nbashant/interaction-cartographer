@@ -1,6 +1,6 @@
 # Architecture
 
-Interaction Cartographer is split into a TypeScript core package, a Node CLI, and a Vite React report app. The primary path is scanning a real localhost product through the report UI or CLI. The demo apps are optional fixtures.
+Glitchly is split into a TypeScript core package, a Node CLI, and a Vite React report app. The primary path is scanning a real localhost product through the report UI or CLI. The demo apps are optional fixtures.
 
 ## System Overview
 

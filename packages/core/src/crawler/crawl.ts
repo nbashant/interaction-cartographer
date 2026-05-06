@@ -66,7 +66,7 @@ const defaultOptions = {
 export function normalizeCrawlOptions(startUrl: string, partial: CartographRuntimeOptions = {}): CrawlOptions {
   const { signal: _signal, onProgress: _onProgress, ...crawlPartial } = partial;
   const viewports = crawlPartial.viewports?.length ? crawlPartial.viewports : DEFAULT_VIEWPORTS;
-  const outputDir = crawlPartial.outputDir ?? path.resolve(process.cwd(), ".cartograph", "runs", slugRunId(startUrl));
+  const outputDir = crawlPartial.outputDir ?? path.resolve(process.cwd(), ".glitchly", "runs", slugRunId(startUrl));
   return {
     ...defaultOptions,
     ...crawlPartial,
@@ -813,15 +813,15 @@ async function quickSettle(page: Page): Promise<void> {
 
 function syntheticValue(action: CandidateAction): string {
   const label = `${action.label ?? ""} ${action.selector}`.toLowerCase();
-  if (label.includes("email")) return "cartographer@example.com";
+  if (label.includes("email")) return "glitchly@example.com";
   if (label.includes("phone")) return "4155550142";
   if (label.includes("zip") || label.includes("postal")) return "94105";
   if (label.includes("card")) return "4242424242424242";
   if (label.includes("cvc") || label.includes("cvv")) return "123";
   if (label.includes("promo")) return "BROKEN500";
   if (label.includes("address")) return "135 Market Street";
-  if (label.includes("name")) return "Ada Cartographer";
-  return "Cartographer test";
+  if (label.includes("name")) return "Avery Glitchly";
+  return "Glitchly test";
 }
 
 function labelState(summary: DomSummary, url: string, title: string): string {

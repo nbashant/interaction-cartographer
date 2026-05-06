@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: interaction-cartographer
+    name: glitchly
     runtime: node
     plan: free
     buildCommand: npm ci --include=dev && npm run build && npx playwright install chromium

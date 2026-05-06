@@ -1,7 +1,7 @@
 {
   "name": "@interaction-cartographer/cli",
-  "version": "0.1.1",
-  "description": "CLI and local companion for scanning real localhost web apps with Interaction Cartographer.",
+  "version": "0.1.2",
+  "description": "CLI and local companion for scanning real localhost web apps with Glitchly.",
   "license": "MIT",
   "type": "module",
   "files": [

@@ -7,7 +7,7 @@ export function generateStaticHtmlReport(run: CartographRun): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Interaction Cartographer Report</title>
+  <title>Glitchly Report</title>
   <style>
     body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f8fb; color: #1d2430; }
     header { display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid #d9dee7; background: #fff; }
@@ -30,7 +30,7 @@ export function generateStaticHtmlReport(run: CartographRun): string {
 </head>
 <body>
   <header>
-    <strong>Interaction Cartographer</strong>
+    <strong>Glitchly</strong>
     <span>${run.summary.stateCount} states · ${run.summary.findingCount} findings</span>
   </header>
   <main id="app"></main>

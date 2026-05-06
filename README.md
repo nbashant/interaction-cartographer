@@ -1,8 +1,8 @@
-# Interaction Cartographer
+# Glitchly
 
 Scan a real local web app and export the findings.
 
-Interaction Cartographer is a local-first browser crawler for products you are actively building on localhost. Point it at `http://localhost:3000`, let it explore safe interactions with Playwright, and review concrete findings with screenshots, DOM signals, network/console evidence, replay paths, states, transitions, and actions.
+Glitchly is a local-first browser crawler for products you are actively building on localhost. Point it at `http://localhost:3000`, let it explore safe interactions with Playwright, and review concrete findings with screenshots, DOM signals, network/console evidence, replay paths, states, transitions, and actions.
 
 ## Primary Workflow
 
@@ -22,7 +22,7 @@ npm run cartograph -- view
 
 Open the report UI, enter the real app URL such as `http://localhost:3000`, and click **Scan real app**.
 
-The scan writes a run folder under `.cartograph/runs/` and makes these artifacts available:
+The scan writes a run folder under `.glitchly/runs/` and makes these artifacts available:
 
 - `run.json`
 - `states.json`
@@ -45,13 +45,13 @@ The hosted UI can pair with a local companion so a public site can still scan th
 The command looks like this:
 
 ```bash
-npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
+npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91
 ```
 
 For local repo testing before the npm package is published:
 
 ```bash
-npm run cartograph -- connect --pair 8K4P-JD91 --server https://interaction-cartographer.onrender.com
+npm run cartograph -- connect --pair 8K4P-JD91 --server https://glitchly.onrender.com
 ```
 
 The companion connects outbound to the hosted server, receives only allowlisted scan/stop tasks, runs Playwright locally, and uploads the finished findings/screenshots back into the paired browser session.
@@ -61,15 +61,15 @@ The companion connects outbound to the hosted server, receives only allowlisted 
 Run directly against a local product:
 
 ```bash
-npm run cartograph -- run http://localhost:3000 --out .cartograph/runs/my-app
-npm run cartograph -- view .cartograph/runs/my-app
+npm run cartograph -- run http://localhost:3000 --out .glitchly/runs/my-app
+npm run cartograph -- view .glitchly/runs/my-app
 ```
 
 Export findings:
 
 ```bash
-npm run cartograph -- export .cartograph/runs/my-app --format json
-npm run cartograph -- export .cartograph/runs/my-app --format markdown
+npm run cartograph -- export .glitchly/runs/my-app --format json
+npm run cartograph -- export .glitchly/runs/my-app --format markdown
 ```
 
 JSON is the best default for agents, issue creation, and downstream processing. Markdown is better for pasting into a PR, ticket, or teammate note.

@@ -69,7 +69,7 @@ describe("static html report", () => {
         sameOriginOnly: true,
         denyActionLabels: [],
         allowActionLabels: [],
-        outputDir: ".cartograph/runs/html-test",
+        outputDir: ".glitchly/runs/html-test",
         headed: false
       },
       summary: {

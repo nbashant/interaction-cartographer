@@ -75,7 +75,7 @@ export function actionPriority(action: CandidateAction): number {
 
 export function actionToReplayStep(action: CandidateAction, value?: string) {
   if (action.type === "fill") {
-    return { type: "fill" as const, selector: action.selector, value: value ?? "cartographer@example.com", label: action.label };
+    return { type: "fill" as const, selector: action.selector, value: value ?? "glitchly@example.com", label: action.label };
   }
   if (action.type === "select") {
     return { type: "select" as const, selector: action.selector, value: value ?? "", label: action.label };

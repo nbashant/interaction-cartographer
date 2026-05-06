@@ -25,7 +25,7 @@ test.beforeAll(async () => {
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error("Timed out waiting for report server")), 45_000);
     server.stdout.on("data", (chunk) => {
-      if (String(chunk).includes("Interaction Cartographer report running at")) {
+      if (String(chunk).includes("Glitchly report running at")) {
         clearTimeout(timeout);
         resolve();
       }
@@ -46,7 +46,7 @@ test.afterAll(async () => {
 
 test("report UI renders scanner, findings, screenshot evidence, details, and exports", async ({ page }) => {
   await page.goto("http://127.0.0.1:4199");
-  await expect(page.getByText("Interaction Cartographer")).toBeVisible();
+  await expect(page.getByText("Glitchly")).toBeVisible();
   await expect(page.getByLabel("Local app URL")).toBeVisible();
   await expect(page.getByLabel("Local app URL")).toHaveAttribute("placeholder", "http://localhost:3000");
   await expect(page.getByLabel("Local app URL")).toHaveValue("");
@@ -289,7 +289,7 @@ test("scan option preferences survive reloads", async ({ page }) => {
   await expect
     .poll(() =>
       page.evaluate(() =>
-        JSON.parse(window.localStorage.getItem("interaction-cartographer.scanPreferences.v1") ?? "{}") as {
+        JSON.parse(window.localStorage.getItem("glitchly.scanPreferences.v1") ?? "{}") as {
           viewports?: string;
           allowSubmit?: boolean;
           allowExternal?: boolean;
@@ -329,7 +329,7 @@ test("target URL starts as a placeholder and persists after a successful scan", 
   await page.getByRole("button", { name: "Scan real app" }).click();
   await expect(page.getByRole("banner").getByText("http://127.0.0.1:5173/", { exact: true })).toBeVisible();
   await expect
-    .poll(() => page.evaluate(() => window.localStorage.getItem("interaction-cartographer.targetUrl.v1")))
+    .poll(() => page.evaluate(() => window.localStorage.getItem("glitchly.targetUrl.v1")))
     .toBe("http://127.0.0.1:5173/");
 
   await page.reload();

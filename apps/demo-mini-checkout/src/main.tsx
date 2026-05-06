@@ -123,7 +123,7 @@ function Shipping({
       <form>
         <label>
           Full name
-          <input data-cartograph="shipping-name" placeholder="Ada Cartographer" />
+          <input data-cartograph="shipping-name" placeholder="Avery Glitchly" />
         </label>
         <label>
           Address line

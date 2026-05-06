@@ -12,7 +12,7 @@ const options: CrawlOptions = {
   sameOriginOnly: true,
   denyActionLabels: [],
   allowActionLabels: [],
-  outputDir: ".cartograph/runs/test",
+  outputDir: ".glitchly/runs/test",
   headed: false
 };
 
