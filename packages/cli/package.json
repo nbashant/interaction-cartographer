@@ -1,9 +1,17 @@
 {
   "name": "@interaction-cartographer/cli",
   "version": "0.1.0",
+  "description": "CLI and local companion for scanning real localhost web apps with Interaction Cartographer.",
+  "license": "MIT",
   "type": "module",
+  "files": [
+    "dist"
+  ],
   "bin": {
     "cartograph": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -12,6 +20,6 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@interaction-cartographer/core": "*"
+    "@interaction-cartographer/core": "^0.1.0"
   }
 }
