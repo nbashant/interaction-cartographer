@@ -138,7 +138,7 @@ async function main(): Promise<void> {
 async function runCommand(args: string[]): Promise<void> {
   const { positional, flags } = parseArgs(args);
   const url = positional[0];
-  if (!url) throw new Error("Missing URL. Usage: cartograph run <url>");
+  if (!url) throw new Error("Missing URL. Usage: glitchly run <url>");
   const options = optionsFromFlags(flags, url);
   const run = await cartograph(url, options);
   console.log(`Glitchly completed ${run.summary.stateCount} states, ${run.summary.transitionCount} transitions, ${run.summary.findingCount} findings.`);
@@ -225,7 +225,7 @@ async function exportCommand(args: string[]): Promise<void> {
 async function connectCommand(args: string[]): Promise<void> {
   const { positional, flags } = parseArgs(args);
   const pairCode = String(flags.pair ?? positional[0] ?? "").trim().toUpperCase();
-  if (!pairCode) throw new Error("Missing pairing code. Usage: cartograph connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com");
+  if (!pairCode) throw new Error("Missing pairing code. Usage: glitchly connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com");
   const serverUrl = normalizeServerUrl(String(flags.server ?? flags.host ?? "https://glitchly-app.onrender.com"));
   const agentName = String(flags.name ?? os.hostname());
   const connected = await postJson<{ sessionId: string; agentId: string; pollMs?: number }>(`${serverUrl}/api/agent/connect`, {
@@ -741,7 +741,7 @@ async function handleAgentSessionRequest(
 async function handleAgentConnectRequest(request: IncomingMessage, response: ServerResponse, state: ReportServerState): Promise<void> {
   cleanupAgentSessions(state);
   const body = await readJsonBody(request);
-  const code = String(body.code ?? "").trim().toUpperCase();
+  const code = String(body.code ?? body.pairCode ?? body.pair ?? "").trim().toUpperCase();
   const sessionId = state.agentSessionsByCode.get(code);
   const session = sessionId ? state.agentSessions.get(sessionId) : undefined;
   if (!session || session.status === "expired") {
@@ -1437,17 +1437,17 @@ function printHelp(): void {
   console.log(`Glitchly
 
 Usage:
-  cartograph run <url> [--out .glitchly/runs/my-app] [--viewports desktop,mobile] [--max-actions 150] [--max-depth 6] [--quality-threshold 75] [--headed]
-  cartograph view [run-dir] [--port 4173] [--host 127.0.0.1] [--no-open]
-  cartograph connect --pair 8K4P-JD91 [--server https://glitchly-app.onrender.com]
-  cartograph demo [--out .glitchly/runs/demo] [--no-open] [--no-view]
-  cartograph export <run-dir> --format json|markdown [--include-quality]
+  glitchly run <url> [--out .glitchly/runs/my-app] [--viewports desktop,mobile] [--max-actions 150] [--max-depth 6] [--quality-threshold 75] [--headed]
+  glitchly view [run-dir] [--port 4173] [--host 127.0.0.1] [--no-open]
+  glitchly connect --pair 8K4P-JD91 [--server https://glitchly-app.onrender.com]
+  glitchly demo [--out .glitchly/runs/demo] [--no-open] [--no-view]
+  glitchly export <run-dir> --format json|markdown [--include-quality]
 
 Examples:
-  cartograph view
-  cartograph run http://localhost:3000 --out .glitchly/runs/my-app
-  cartograph connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com
-  cartograph export .glitchly/runs/my-app --format json
+  glitchly view
+  glitchly run http://localhost:3000 --out .glitchly/runs/my-app
+  glitchly connect --pair 8K4P-JD91 --server https://glitchly-app.onrender.com
+  glitchly export .glitchly/runs/my-app --format json
 `);
 }
 

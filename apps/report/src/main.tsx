@@ -571,8 +571,8 @@ const defaultHostedOrigin = "https://glitchly-app.onrender.com";
 function LocalCompanionPanel({ session }: { session: AgentSession }) {
   const command =
     window.location.origin === defaultHostedOrigin
-      ? `npx -y @interaction-cartographer/cli@latest connect --pair ${session.pairCode}`
-      : `npx -y @interaction-cartographer/cli@latest connect --pair ${session.pairCode} --server ${window.location.origin}`;
+      ? `npx -y glitchly@latest connect --pair ${session.pairCode}`
+      : `npx -y glitchly@latest connect --pair ${session.pairCode} --server ${window.location.origin}`;
   const connected = session.connected;
   async function copyCommand() {
     await navigator.clipboard?.writeText(command).catch(() => undefined);

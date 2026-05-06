@@ -1,5 +1,5 @@
 {
-  "name": "glitchly",
+  "name": "glitchly-monorepo",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,8 +8,8 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run -w @interaction-cartographer/core build && npm run -w @interaction-cartographer/cli build && npm run -w @interaction-cartographer/report build && npm run -w @interaction-cartographer/demo-atlas-crm build && npm run -w @interaction-cartographer/demo-mini-checkout build",
-    "cartograph": "npm run -w @interaction-cartographer/cli cartograph --",
+    "build": "npm run -w @interaction-cartographer/core build && npm run -w glitchly build && npm run -w @interaction-cartographer/report build && npm run -w @interaction-cartographer/demo-atlas-crm build && npm run -w @interaction-cartographer/demo-mini-checkout build",
+    "cartograph": "npm run -w glitchly cartograph --",
     "demo": "npm run cartograph -- demo",
     "dev:report": "npm run -w @interaction-cartographer/report dev",
     "dev:atlas": "npm run -w @interaction-cartographer/demo-atlas-crm dev",

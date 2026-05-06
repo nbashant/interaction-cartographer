@@ -45,7 +45,7 @@ The hosted UI can pair with a local companion so a public site can still scan th
 The command looks like this:
 
 ```bash
-npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91
+npx -y glitchly@latest connect --pair 8K4P-JD91
 ```
 
 For local repo testing before the npm package is published:

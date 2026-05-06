@@ -1,13 +1,14 @@
 {
-  "name": "@interaction-cartographer/cli",
-  "version": "0.1.2",
-  "description": "CLI and local companion for scanning real localhost web apps with Glitchly.",
+  "name": "glitchly",
+  "version": "0.1.3",
+  "description": "Glitchly CLI and local companion for scanning real localhost web apps.",
   "license": "MIT",
   "type": "module",
   "files": [
     "dist"
   ],
   "bin": {
+    "glitchly": "dist/index.js",
     "cartograph": "dist/index.js"
   },
   "publishConfig": {

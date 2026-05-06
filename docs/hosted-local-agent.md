@@ -15,7 +15,7 @@ First-time flow:
 3. UI shows one command:
 
    ```bash
-   npx -y @interaction-cartographer/cli@latest connect --pair 8K4P-JD91
+   npx -y glitchly@latest connect --pair 8K4P-JD91
    ```
 
 4. User runs the command locally.
