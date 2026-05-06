@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+.env
+.env.*
+.render/
+.artifacts/
+.cartograph/runs/
+apps/*/dist/
+packages/*/dist/
+tests/.tmp/
+test-results/
+playwright-report/

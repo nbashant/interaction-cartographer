@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: interaction-cartographer
+    runtime: node
+    plan: free
+    buildCommand: npm ci --include=dev && npm run build && npx playwright install chromium
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/project/playwright

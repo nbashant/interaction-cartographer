@@ -1,0 +1,31 @@
+{
+  "name": "interaction-cartographer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @interaction-cartographer/core build && npm run -w @interaction-cartographer/cli build && npm run -w @interaction-cartographer/report build && npm run -w @interaction-cartographer/demo-atlas-crm build && npm run -w @interaction-cartographer/demo-mini-checkout build",
+    "cartograph": "npm run -w @interaction-cartographer/cli cartograph --",
+    "demo": "npm run cartograph -- demo",
+    "dev:report": "npm run -w @interaction-cartographer/report dev",
+    "dev:atlas": "npm run -w @interaction-cartographer/demo-atlas-crm dev",
+    "dev:checkout": "npm run -w @interaction-cartographer/demo-mini-checkout dev",
+    "start": "node packages/cli/dist/index.js view --no-open --host 0.0.0.0",
+    "lint": "npm run typecheck -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7",
+    "vitest": "^2.1.8",
+    "tsx": "^4.19.2"
+  }
+}

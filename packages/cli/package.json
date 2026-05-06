@@ -1,0 +1,17 @@
+{
+  "name": "@interaction-cartographer/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "cartograph": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "cartograph": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@interaction-cartographer/core": "*"
+  }
+}
